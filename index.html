@@ -30,17 +30,10 @@
           <button id="reset">reset</button>
         </div>
         <div class="row">
-          <label>potential</label>
-          <select id="potential">
-            <option value="lj">Lennard-Jones (attractive)</option>
-            <option value="wca">WCA (purely repulsive)</option>
-          </select>
+          <label>scenario</label>
+          <select id="scenario"></select>
         </div>
-        <div class="row">
-          <label>temperature (T*)</label>
-          <input id="temp" type="range" min="0.2" max="3.0" step="0.05" value="1.0" />
-          <div class="stat"><span>T set</span><span id="tempVal">1.00</span></div>
-        </div>
+        <div id="blurb" style="font-size:11px;color:#8b93a1;line-height:1.4;margin:6px 0 10px;"></div>
         <div class="row"><div class="stat"><span>step</span><span id="stepStat">0</span></div></div>
         <div class="row"><div class="stat"><span>N</span><span id="nStat">0</span></div></div>
         <div class="row"><div class="stat"><span>KE</span><span id="keStat">0</span></div></div>

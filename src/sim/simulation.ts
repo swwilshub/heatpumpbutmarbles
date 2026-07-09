@@ -15,6 +15,28 @@ export interface SimulationConfig {
   capacity: number;
 }
 
+// Velocity-rescale thermostat — simplest energy-conserving-per-step method
+// for equilibration. Do NOT use during a measurement window where you want
+// natural energy exchange (e.g. free expansion). Langevin thermostat lives
+// in a separate module for the heat-pump reservoirs.
+export function rescaleToTemperature(sim: Simulation, targetT: number): void {
+  const n = sim.n;
+  if (n === 0) return;
+  let ke = 0;
+  const velX = sim.velX;
+  const velY = sim.velY;
+  for (let i = 0; i < n; i++) {
+    ke += velX[i]! * velX[i]! + velY[i]! * velY[i]!;
+  }
+  const measuredT = ke / (2 * n);
+  if (measuredT <= 0) return;
+  const s = Math.sqrt(targetT / measuredT);
+  for (let i = 0; i < n; i++) {
+    velX[i] = velX[i]! * s;
+    velY[i] = velY[i]! * s;
+  }
+}
+
 export class Simulation {
   readonly config: SimulationConfig;
   posX: Float64Array;
@@ -172,5 +194,12 @@ export class Simulation {
   // has a valid PE, and Verlet's first drift uses the correct acceleration.
   primeForces(): void {
     this.computeForces();
+  }
+
+  // Swap the barrier segment set — used by free-expansion and piston scenarios.
+  // Forces are re-primed so subsequent Verlet steps see the new geometry.
+  setSegments(segments: LineSegment[]): void {
+    (this.config as { segments: LineSegment[] }).segments = segments;
+    this.primeForces();
   }
 }

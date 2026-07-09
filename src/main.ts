@@ -1,8 +1,6 @@
-import { Simulation } from "./sim/simulation";
-import type { LineSegment, PotentialParams } from "./sim/types";
-import { seedLattice } from "./sim/init";
-import { Rng } from "./sim/rng";
 import { CanvasRenderer } from "./render/canvasRenderer";
+import { SCENARIOS, scenarioById } from "./scenarios";
+import type { Simulation } from "./sim/simulation";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const renderer = new CanvasRenderer(canvas);
@@ -14,70 +12,50 @@ const peEl = document.getElementById("peStat") as HTMLElement;
 const eEl = document.getElementById("eStat") as HTMLElement;
 const tmEl = document.getElementById("tmStat") as HTMLElement;
 const fpsEl = document.getElementById("fpsStat") as HTMLElement;
-const tempSlider = document.getElementById("temp") as HTMLInputElement;
-const tempVal = document.getElementById("tempVal") as HTMLElement;
-const potentialSelect = document.getElementById("potential") as HTMLSelectElement;
+const scenarioSel = document.getElementById("scenario") as HTMLSelectElement;
+const blurbEl = document.getElementById("blurb") as HTMLElement;
 const pauseBtn = document.getElementById("pause") as HTMLButtonElement;
 const stepBtn = document.getElementById("step") as HTMLButtonElement;
 const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 
+for (const s of SCENARIOS) {
+  const opt = document.createElement("option");
+  opt.value = s.id;
+  opt.textContent = s.name;
+  scenarioSel.appendChild(opt);
+}
+
 let paused = false;
 let sim: Simulation;
+let tick: (step: number) => void;
+let currentId = SCENARIOS[0]!.id;
 
-function boxSegments(x0: number, y0: number, x1: number, y1: number): LineSegment[] {
-  return [
-    { ax: x0, ay: y0, bx: x1, by: y0, epsilon: 1, sigma: 1 },
-    { ax: x1, ay: y0, bx: x1, by: y1, epsilon: 1, sigma: 1 },
-    { ax: x1, ay: y1, bx: x0, by: y1, epsilon: 1, sigma: 1 },
-    { ax: x0, ay: y1, bx: x0, by: y0, epsilon: 1, sigma: 1 },
-  ];
+function load(id: string) {
+  currentId = id;
+  const scenario = scenarioById(id);
+  blurbEl.textContent = scenario.blurb;
+  const built = scenario.build();
+  sim = built.sim;
+  tick = built.tick;
 }
 
-function makeSim(): Simulation {
-  const potentialKind = potentialSelect.value === "wca" ? "wca" : "lj";
-  const potential: PotentialParams = {
-    kind: potentialKind,
-    epsilon: 1,
-    sigma: 1,
-    rCut: 2.5,
-  };
-  const domain = { xMin: 0, yMin: 0, xMax: 40, yMax: 30 };
-  const s = new Simulation({
-    domain,
-    potential,
-    segments: boxSegments(1, 1, 39, 29),
-    dt: 0.005,
-    capacity: 2000,
-  });
-  const T = Number(tempSlider.value);
-  seedLattice(s, { xMin: 3, yMin: 3, xMax: 37, yMax: 27 }, 1.2, T, new Rng(1234));
-  s.primeForces();
-  return s;
-}
-
-sim = makeSim();
+load(currentId);
+scenarioSel.value = currentId;
 
 pauseBtn.addEventListener("click", () => {
   paused = !paused;
   pauseBtn.textContent = paused ? "resume" : "pause";
 });
 stepBtn.addEventListener("click", () => {
-  if (paused) sim.advance(1);
+  if (paused) {
+    tick(sim.step);
+    sim.advance(1);
+  }
 });
-resetBtn.addEventListener("click", () => {
-  sim = makeSim();
-});
-potentialSelect.addEventListener("change", () => {
-  sim = makeSim();
-});
-tempSlider.addEventListener("input", () => {
-  tempVal.textContent = Number(tempSlider.value).toFixed(2);
-});
+resetBtn.addEventListener("click", () => load(currentId));
+scenarioSel.addEventListener("change", () => load(scenarioSel.value));
 
-// Frame loop. Physics runs in fixed-size substeps decoupled from render frames
-// so slower devices skip frames rather than integrate with too large a dt.
-const dt = sim.config.dt;
-const targetPhysicsPerFrame = 4; // substeps per rendered frame at 60 fps
+const SUBSTEPS = 4;
 let lastFrame = performance.now();
 let fpsAvg = 60;
 
@@ -87,12 +65,19 @@ function frame(now: number) {
   const fps = 1000 / Math.max(1, dtMs);
   fpsAvg = fpsAvg * 0.9 + fps * 0.1;
 
-  if (!paused) sim.advance(targetPhysicsPerFrame);
+  if (!paused) {
+    for (let s = 0; s < SUBSTEPS; s++) {
+      tick(sim.step);
+      sim.advance(1);
+    }
+  }
 
-  const T = Number(tempSlider.value);
-  renderer.draw(sim, { temperatureScale: T, atomRadius: 0.55 });
-
+  // Colour scale — use the running measured T so hot atoms read hot at
+  // whatever temperature the scenario is currently at.
   const d = sim.diagnostics();
+  const tScale = Math.max(0.3, d.temperature);
+  renderer.draw(sim, { temperatureScale: tScale, atomRadius: 0.5 });
+
   stepEl.textContent = String(d.step);
   nEl.textContent = String(sim.n);
   keEl.textContent = d.kineticEnergy.toFixed(2);
@@ -103,6 +88,4 @@ function frame(now: number) {
 
   requestAnimationFrame(frame);
 }
-tempVal.textContent = Number(tempSlider.value).toFixed(2);
-void dt;
 requestAnimationFrame(frame);
