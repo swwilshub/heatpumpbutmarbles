@@ -4,12 +4,34 @@ import { Rng } from "../sim/rng";
 import { addHeatExchanger } from "../sim/heatExchanger";
 import { MovingSegment } from "../sim/movingSegment";
 import type { LineSegment, PotentialParams } from "../sim/types";
-import type { RegionOverlay } from "../render/canvasRenderer";
+import type { RegionOverlay as RendererRegion } from "../render/canvasRenderer";
+import type { UnitAnchors } from "../units";
+import { DEFAULT_ANCHORS } from "../units";
+
+// A "temperature" value returns a T* number the UI formats using the
+// scenario's unit anchors + the current UnitMode (°C default, °F, or T*).
+// A "raw" value returns a pre-formatted string (energy, count, position…).
+export type ReadoutValue =
+  | { kind: "temperature"; value: () => number }
+  | { kind: "raw"; value: () => string };
 
 export interface Readout {
   label: string;
-  value: () => string;
+  v: ReadoutValue;
 }
+export interface Region {
+  label: string;
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+  v?: ReadoutValue;
+  tint?: string;
+}
+
+// Helper constructors so scenario code stays readable.
+export const T = (fn: () => number): ReadoutValue => ({ kind: "temperature", value: fn });
+export const R = (fn: () => string): ReadoutValue => ({ kind: "raw", value: fn });
 
 export interface Scenario {
   id: string;
@@ -19,15 +41,38 @@ export interface Scenario {
     sim: Simulation;
     tick: (step: number) => void;
     readouts?: Readout[];
-    // Fixed reference for atom colouring — usually the highest T the
-    // scenario is expected to visit. Defaults to 2.0 if omitted.
-    temperatureScale?: number;
-    // Named rectangular regions drawn as small labels on top of the canvas
-    // (e.g. "gas: T=1.23", "hot reservoir: T=2.00"). Users get to see the
-    // temperature of each part of the system at a glance.
-    regions?: RegionOverlay[];
+    regions?: Region[];
+    // Unit anchors — defaults to DEFAULT_ANCHORS.
+    unitAnchors?: UnitAnchors;
+    // Optional palette range in °C for the legend.
+    cMin?: number;
+    cMax?: number;
   };
 }
+
+// Renderer wants its own Region shape (with a `value: () => string`). We
+// bridge on the main-loop side by capturing the current UnitMode.
+export function regionToRenderer(
+  r: Region,
+  fmt: (t: number) => string
+): RendererRegion {
+  return {
+    label: r.label,
+    xMin: r.xMin,
+    yMin: r.yMin,
+    xMax: r.xMax,
+    yMax: r.yMax,
+    tint: r.tint,
+    value: r.v
+      ? r.v.kind === "temperature"
+        ? () => fmt(r.v!.value() as number)
+        : () => r.v!.value() as string
+      : undefined,
+  };
+}
+
+// Silence unused-import — DEFAULT_ANCHORS is re-exported for scenario code.
+export { DEFAULT_ANCHORS };
 
 function box(x0: number, y0: number, x1: number, y1: number, sigma = 1): LineSegment[] {
   return [
@@ -41,7 +86,7 @@ function box(x0: number, y0: number, x1: number, y1: number, sigma = 1): LineSeg
 const DEFAULT_POT_LJ: PotentialParams = { kind: "lj", epsilon: 1, sigma: 1, rCut: 2.5 };
 const DEFAULT_POT_WCA: PotentialParams = { kind: "wca", epsilon: 1, sigma: 1, rCut: 2.5 };
 
-function confined(potential: PotentialParams, T: number): Scenario["build"] {
+function confined(potential: PotentialParams, targetT: number): Scenario["build"] {
   return () => {
     const sim = new Simulation({
       domain: { xMin: 0, yMin: 0, xMax: 30, yMax: 22 },
@@ -50,14 +95,13 @@ function confined(potential: PotentialParams, T: number): Scenario["build"] {
       dt: 0.005,
       capacity: 2000,
     });
-    seedLattice(sim, { xMin: 3, yMin: 3, xMax: 27, yMax: 19 }, 1.2, T, new Rng(2024));
+    seedLattice(sim, { xMin: 3, yMin: 3, xMax: 27, yMax: 19 }, 1.2, targetT, new Rng(2024));
     sim.primeForces();
     return {
       sim,
       tick: (step: number) => {
-        if (step < 400 && step % 50 === 0 && step > 0) rescaleToTemperature(sim, T);
+        if (step < 400 && step % 50 === 0 && step > 0) rescaleToTemperature(sim, targetT);
       },
-      temperatureScale: Math.max(1.5, T * 1.5),
       regions: [
         {
           label: "gas",
@@ -65,7 +109,7 @@ function confined(potential: PotentialParams, T: number): Scenario["build"] {
           yMin: 3,
           xMax: 27,
           yMax: 19,
-          value: () => sim.diagnostics().temperature.toFixed(2),
+          v: T(() => sim.diagnostics().temperature),
         },
       ],
     };
@@ -74,7 +118,7 @@ function confined(potential: PotentialParams, T: number): Scenario["build"] {
 
 function freeExpansion(
   potential: PotentialParams,
-  T: number,
+  targetT: number,
   smallSize: number,
   largeSize: number,
   spacing: number,
@@ -98,7 +142,7 @@ function freeExpansion(
       sim,
       { xMin: 0.5, yMin: 0.5, xMax: smallSize - 0.5, yMax: smallSize - 0.5 },
       spacing,
-      T,
+      targetT,
       new Rng(4242)
     );
     sim.primeForces();
@@ -107,14 +151,13 @@ function freeExpansion(
       sim,
       tick: (step: number) => {
         if (!released) {
-          if (step % 50 === 0 && step > 0) rescaleToTemperature(sim, T);
+          if (step % 50 === 0 && step > 0) rescaleToTemperature(sim, targetT);
           if (step >= releaseAtStep) {
             sim.setSegments(box(0, 0, largeSize, largeSize));
             released = true;
           }
         }
       },
-      temperatureScale: Math.max(1.5, T * 1.6),
       regions: [
         {
           label: "gas",
@@ -122,7 +165,7 @@ function freeExpansion(
           yMin: 0,
           xMax: largeSize,
           yMax: largeSize,
-          value: () => sim.diagnostics().temperature.toFixed(2),
+          v: T(() => sim.diagnostics().temperature),
         },
       ],
     };
@@ -217,10 +260,9 @@ function compressorHotExchanger(): Scenario["build"] {
           }
         }
       },
-      temperatureScale: 2.5,
       regions: [
         {
-          label: `reservoir → T=${T_RESERVOIR.toFixed(2)}`,
+          label: "reservoir",
           xMin: -3,
           yMin: 0,
           xMax: 0,
@@ -228,44 +270,45 @@ function compressorHotExchanger(): Scenario["build"] {
           tint: "rgba(70,130,180,0.10)",
         },
         {
-          label: "wall (measured)",
-          xMin: 0,
-          yMin: 0,
-          xMax: 1.5,
-          yMax: CH_H,
-          value: () => sim.temperatureOf(hx.atomIndices).toFixed(2),
-        },
-        {
-          label: "gas (measured)",
-          xMin: 1.5,
+          label: "gas",
+          xMin: 3,
           yMin: 0.5,
           xMax: PISTON_RIGHT,
           yMax: CH_H - 0.5,
-          value: () => sim.temperatureOf(gasIdx).toFixed(2),
+          v: T(() => sim.temperatureOf(gasIdx)),
         },
       ],
       readouts: [
         {
+          label: "reservoir target",
+          v: T(() => T_RESERVOIR),
+        },
+        {
+          label: "wall (measured)",
+          v: T(() => sim.temperatureOf(hx.atomIndices)),
+        },
+        {
           label: "W (piston work in)",
-          value: () => (started ? piston.workInput.toFixed(2) : "—"),
+          v: R(() => (started ? piston.workInput.toFixed(2) : "—")),
         },
         {
           label: "Q_hot (heat to reservoir)",
-          value: () =>
-            started ? (thermostat.energyOut - thermostat.energyIn).toFixed(2) : "—",
+          v: R(() =>
+            started ? (thermostat.energyOut - thermostat.energyIn).toFixed(2) : "—"
+          ),
         },
         {
           label: "COP (Q_hot / W)",
-          value: () => {
+          v: R(() => {
             if (!started || piston.workInput <= 0) return "—";
             return (
               (thermostat.energyOut - thermostat.energyIn) / piston.workInput
             ).toFixed(2);
-          },
+          }),
         },
         {
           label: "piston x",
-          value: () => piston.ax.toFixed(1),
+          v: R(() => piston.ax.toFixed(1)),
         },
       ],
     };

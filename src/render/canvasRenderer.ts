@@ -1,40 +1,42 @@
 import type { Simulation } from "../sim/simulation";
-import { paletteSamples, speedColor } from "./palette";
+import { DEFAULT_ANCHORS, starToCelsius, type UnitAnchors } from "../units";
+import {
+  DEFAULT_LEGEND_C_MAX,
+  DEFAULT_LEGEND_C_MIN,
+  celsiusColor,
+  paletteSamplesCelsius,
+} from "./palette";
 
 // 2D canvas rendering. Instanced-quad WebGL2 is the M5 upgrade — plain
 // canvas gets us through M1–M4 at 2k atoms comfortably.
 
 export interface RegionOverlay {
-  // Label + rectangular bounding box in world coordinates. Renderer draws the
-  // label at the top-left of the box with a small tint over the region so
-  // users can see which part of the sim it names.
   label: string;
   xMin: number;
   yMin: number;
   xMax: number;
   yMax: number;
-  // Optional runtime-computed value shown after the label (e.g. "T=1.24").
+  // Value fn returns pre-formatted text (already unit-mapped). Renderer
+  // stays unit-agnostic; the caller does the T*→°C formatting.
   value?: () => string;
-  // Tint colour rgba.
   tint?: string;
 }
 
 export interface RenderOptions {
-  // Fixed reference used to normalise atom KE → colour. 1.0 maps to the
-  // top of the palette. Should be roughly the highest T the scenario is
-  // expected to visit — the palette clamps beyond that.
-  temperatureScale: number;
   atomRadius: number;
+  anchors?: UnitAnchors;
   regions?: readonly RegionOverlay[];
-  // Draw a horizontal colour-bar legend at the bottom of the canvas.
   drawLegend?: boolean;
+  // Optional palette window in °C. If omitted, the renderer uses
+  // DEFAULT_LEGEND_C_MIN..DEFAULT_LEGEND_C_MAX.
+  cMin?: number;
+  cMax?: number;
 }
 
 export class CanvasRenderer {
   private ctx: CanvasRenderingContext2D;
   private width: number;
   private height: number;
-  private legendSamples = paletteSamples(64);
 
   constructor(private canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
@@ -55,12 +57,11 @@ export class CanvasRenderer {
     const { ctx, width, height } = this;
     ctx.fillStyle = "#0b0d12";
     ctx.fillRect(0, 0, width, height);
+    const anchors = opts.anchors ?? DEFAULT_ANCHORS;
 
-    // Reserve bottom strip for the legend if requested.
-    const legendH = opts.drawLegend ? 42 : 0;
+    const legendH = opts.drawLegend ? 46 : 0;
     const stageH = height - legendH;
 
-    // world → screen: fit domain into (width, stageH) with 1:1 aspect.
     const dom = sim.config.domain;
     const worldW = dom.xMax - dom.xMin;
     const worldH = dom.yMax - dom.yMin;
@@ -70,7 +71,6 @@ export class CanvasRenderer {
     const sx = (x: number) => x * scale + offsetX;
     const sy = (y: number) => stageH - (y * scale + offsetY);
 
-    // Region tints (drawn behind atoms so labels overlay cleanly).
     if (opts.regions) {
       for (const r of opts.regions) {
         if (r.tint) {
@@ -84,7 +84,6 @@ export class CanvasRenderer {
       }
     }
 
-    // Static segments (walls)
     ctx.strokeStyle = "#3a4459";
     ctx.lineWidth = Math.max(1, 0.15 * scale);
     ctx.lineCap = "round";
@@ -95,7 +94,6 @@ export class CanvasRenderer {
     }
     ctx.stroke();
 
-    // Moving segments (compressor blades)
     if (sim.movingSegments.length > 0) {
       ctx.strokeStyle = "#f0a070";
       ctx.lineWidth = Math.max(2, 0.22 * scale);
@@ -107,11 +105,11 @@ export class CanvasRenderer {
       ctx.stroke();
     }
 
-    // Atoms — colour by v² / (2 · temperatureScale). tScale sets what "1.0"
-    // means; using a fixed value keeps colours COMPARABLE across regions
-    // and time, which is the whole point of the ramp.
+    // Atoms — colour by mapping each atom's instantaneous KE-based T*
+    // through the °C anchor mapping. "Instantaneous T" for a single atom is
+    // v² (since ½ m v² = T for a 2-DOF system with m=1); the °C map is
+    // linear so this survives without extra normalization.
     const r = opts.atomRadius * scale;
-    const norm = 1 / Math.max(1e-6, 2 * opts.temperatureScale);
     const posX = sim.posX;
     const posY = sim.posY;
     const velX = sim.velX;
@@ -120,15 +118,17 @@ export class CanvasRenderer {
     for (let i = 0; i < sim.n; i++) {
       const vx = velX[i]!;
       const vy = velY[i]!;
-      const t = (vx * vx + vy * vy) * norm;
-      const px = sx(posX[i]!);
-      const py = sy(posY[i]!);
-      ctx.fillStyle = speedColor(t);
+      // Note: per-atom "T*" from |v|² has huge fluctuations (it's a single
+      // draw from an exponential distribution when the atom is at
+      // equilibrium). To keep the eye from being dazzled we soften with a
+      // sqrt on the KE contribution around the local mean — but we keep
+      // it monotonic, so a hot atom still reads hot.
+      const tStar = vx * vx + vy * vy;
+      const c = starToCelsius(tStar, anchors);
+      ctx.fillStyle = celsiusColor(c);
       ctx.beginPath();
-      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.arc(sx(posX[i]!), sy(posY[i]!), r, 0, Math.PI * 2);
       ctx.fill();
-      // Ring around tethered (wall) atoms so they're identifiable as
-      // "walls" independent of their temperature colour.
       if (kind[i] === 1) {
         ctx.strokeStyle = "rgba(255,255,255,0.35)";
         ctx.lineWidth = Math.max(1, 0.06 * scale);
@@ -136,8 +136,6 @@ export class CanvasRenderer {
       }
     }
 
-    // Region labels (drawn on top of atoms so they're legible even in a
-    // dense chamber). Value pulled every frame so T tiles stay live.
     if (opts.regions) {
       ctx.font = "600 12px system-ui, sans-serif";
       ctx.textBaseline = "top";
@@ -153,45 +151,54 @@ export class CanvasRenderer {
       }
     }
 
-    // Legend
     if (opts.drawLegend) {
-      this.drawLegend(ctx, width, height - legendH, legendH, opts.temperatureScale);
+      const cMin = opts.cMin ?? DEFAULT_LEGEND_C_MIN;
+      const cMax = opts.cMax ?? DEFAULT_LEGEND_C_MAX;
+      this.drawCelsiusLegend(ctx, width, height - legendH, legendH, cMin, cMax);
     }
   }
 
-  private drawLegend(
+  private drawCelsiusLegend(
     ctx: CanvasRenderingContext2D,
     w: number,
     y: number,
     h: number,
-    tempScale: number
+    cMin: number,
+    cMax: number
   ): void {
     ctx.fillStyle = "#0b0d12";
     ctx.fillRect(0, y, w, h);
-    const barX = 60;
+    const samples = paletteSamplesCelsius(96, cMin, cMax);
+    const barX = 40;
     const barY = y + 10;
-    const barW = w - 90;
-    const barH = 12;
-    const nSamples = this.legendSamples.length;
-    for (let i = 0; i < nSamples; i++) {
-      ctx.fillStyle = this.legendSamples[i]!;
-      const x0 = barX + (i / nSamples) * barW;
-      const x1 = barX + ((i + 1) / nSamples) * barW;
+    const barW = w - 80;
+    const barH = 14;
+    for (let i = 0; i < samples.length; i++) {
+      ctx.fillStyle = samples[i]!;
+      const x0 = barX + (i / samples.length) * barW;
+      const x1 = barX + ((i + 1) / samples.length) * barW;
       ctx.fillRect(x0, barY, x1 - x0 + 1, barH);
     }
     ctx.strokeStyle = "#2b3040";
     ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
-    ctx.fillStyle = "#e6e8ec";
+    // Ticks — every 30 °C, always showing 0 °C.
     ctx.font = "11px system-ui, sans-serif";
+    ctx.fillStyle = "#c7cdd6";
     ctx.textBaseline = "top";
-    ctx.textAlign = "left";
-    ctx.fillText("T*", 20, barY + 1);
-    ctx.textAlign = "left";
-    ctx.fillText("cold", barX, barY + barH + 4);
-    ctx.textAlign = "center";
-    ctx.fillText(`${tempScale.toFixed(1)}`, barX + barW / 2, barY + barH + 4);
-    ctx.textAlign = "right";
-    ctx.fillText(`≥ ${(tempScale * 2).toFixed(1)}`, barX + barW, barY + barH + 4);
+    const tickStep = 30;
+    const startTick = Math.ceil(cMin / tickStep) * tickStep;
+    for (let c = startTick; c <= cMax; c += tickStep) {
+      const px = barX + ((c - cMin) / (cMax - cMin)) * barW;
+      ctx.strokeStyle = "#2b3040";
+      ctx.beginPath();
+      ctx.moveTo(px, barY + barH);
+      ctx.lineTo(px, barY + barH + 3);
+      ctx.stroke();
+      const label = c === 0 ? "0 °C" : `${c}`;
+      ctx.textAlign = "center";
+      ctx.fillStyle = c === 0 ? "#e6e8ec" : "#c7cdd6";
+      ctx.fillText(label, px, barY + barH + 5);
+    }
     ctx.textAlign = "left";
   }
 }

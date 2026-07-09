@@ -35,17 +35,27 @@
         </div>
         <div id="blurb" style="font-size:11px;color:#8b93a1;line-height:1.4;margin:6px 0 10px;"></div>
         <div class="row">
+          <label>units</label>
+          <select id="units">
+            <option value="C" selected>°C</option>
+            <option value="F">°F</option>
+            <option value="star">reduced (T*) — expert</option>
+          </select>
+        </div>
+        <div class="row">
           <label>time dilation (steps / frame)</label>
           <input id="dilation" type="range" min="0" max="6" step="1" value="4" />
           <div class="stat"><span id="dilationLabel">8×</span></div>
         </div>
+        <div class="row"><div class="stat"><span>T (measured)</span><span id="tmStat">0</span></div></div>
         <div class="row"><div class="stat"><span>step</span><span id="stepStat">0</span></div></div>
         <div class="row"><div class="stat"><span>N</span><span id="nStat">0</span></div></div>
-        <div class="row"><div class="stat"><span>KE</span><span id="keStat">0</span></div></div>
-        <div class="row"><div class="stat"><span>PE</span><span id="peStat">0</span></div></div>
-        <div class="row"><div class="stat"><span>E</span><span id="eStat">0</span></div></div>
-        <div class="row"><div class="stat"><span>T meas</span><span id="tmStat">0</span></div></div>
         <div class="row"><div class="stat"><span>fps</span><span id="fpsStat">0</span></div></div>
+        <div id="expertRow" style="display:none">
+          <div class="row"><div class="stat"><span>KE</span><span id="keStat">0</span></div></div>
+          <div class="row"><div class="stat"><span>PE</span><span id="peStat">0</span></div></div>
+          <div class="row"><div class="stat"><span>E</span><span id="eStat">0</span></div></div>
+        </div>
         <div id="readouts" style="border-top:1px solid #1e222b;margin-top:10px;padding-top:8px;"></div>
       </div>
     </div>

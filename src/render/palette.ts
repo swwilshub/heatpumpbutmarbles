@@ -1,39 +1,55 @@
-// Temperature colour ramp — cool blue → magenta → red → orange → white-yellow.
-// Deliberately starts at a saturated blue (not black) so cold atoms stay
-// visible against the dark canvas background. Values outside [0,1] clamp.
+// Temperature colour ramp — anchored in *degrees Celsius*, not in normalised
+// [0,1]. Deep blue below -30 °C, cool blue at 0 °C (freeze point sits at a
+// distinct color), through purple / red at room temp, orange / yellow / white
+// at typical condenser hot-side. This lets the user read the palette as an
+// actual temperature scale rather than an abstract normalisation.
 
-const STOPS: readonly [number, number, number][] = [
-  [32, 78, 180], // cold — deep blue
-  [90, 84, 210], // cool — indigo
-  [176, 66, 178], // mid — magenta
-  [222, 68, 96], // warm — coral red
-  [244, 152, 40], // hot — orange
-  [252, 232, 128], // very hot — pale yellow
+const STOPS: readonly { c: number; rgb: [number, number, number] }[] = [
+  { c: -60, rgb: [10, 40, 120] }, // ice-cold
+  { c: -30, rgb: [30, 90, 200] },
+  { c: 0, rgb: [70, 130, 220] }, // freezing point — distinct cool blue
+  { c: 20, rgb: [140, 100, 200] }, // room temp — soft purple
+  { c: 40, rgb: [210, 80, 140] },
+  { c: 60, rgb: [232, 90, 74] },
+  { c: 90, rgb: [244, 152, 40] }, // hot condenser
+  { c: 150, rgb: [252, 232, 128] }, // scorching
 ];
 
-export function speedColor(t: number): string {
-  const c = clamp01(t);
-  const seg = c * (STOPS.length - 1);
-  const i = Math.min(Math.floor(seg), STOPS.length - 2);
-  const f = seg - i;
-  const a = STOPS[i]!;
-  const b = STOPS[i + 1]!;
-  const r = Math.round(a[0] + (b[0] - a[0]) * f);
-  const g = Math.round(a[1] + (b[1] - a[1]) * f);
-  const bl = Math.round(a[2] + (b[2] - a[2]) * f);
-  return `rgb(${r},${g},${bl})`;
+export function celsiusColor(c: number): string {
+  // Find surrounding stops. Clamp to endpoints.
+  const first = STOPS[0]!;
+  const last = STOPS[STOPS.length - 1]!;
+  if (c <= first.c) return rgb(first.rgb);
+  if (c >= last.c) return rgb(last.rgb);
+  for (let i = 0; i < STOPS.length - 1; i++) {
+    const a = STOPS[i]!;
+    const b = STOPS[i + 1]!;
+    if (c >= a.c && c <= b.c) {
+      const f = (c - a.c) / (b.c - a.c);
+      const r = Math.round(a.rgb[0] + (b.rgb[0] - a.rgb[0]) * f);
+      const g = Math.round(a.rgb[1] + (b.rgb[1] - a.rgb[1]) * f);
+      const bl = Math.round(a.rgb[2] + (b.rgb[2] - a.rgb[2]) * f);
+      return `rgb(${r},${g},${bl})`;
+    }
+  }
+  return rgb(last.rgb);
 }
 
-// For drawing the colour bar: sample the palette at N evenly-spaced points
-// so the renderer doesn't have to know about STOPS.
-export function paletteSamples(n: number): string[] {
+function rgb(v: [number, number, number]): string {
+  return `rgb(${v[0]},${v[1]},${v[2]})`;
+}
+
+// Palette range for the legend and colour bar. Renderer picks the wider of
+// [scenario min..max] and [defaultMin..defaultMax] so the legend fits the
+// scene without clipping.
+export const DEFAULT_LEGEND_C_MIN = -50;
+export const DEFAULT_LEGEND_C_MAX = 120;
+
+export function paletteSamplesCelsius(n: number, cMin: number, cMax: number): string[] {
   const out: string[] = [];
   for (let i = 0; i < n; i++) {
-    out.push(speedColor(i / (n - 1)));
+    const c = cMin + (i / (n - 1)) * (cMax - cMin);
+    out.push(celsiusColor(c));
   }
   return out;
-}
-
-function clamp01(x: number): number {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
 }

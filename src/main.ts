@@ -1,6 +1,13 @@
-import { CanvasRenderer, type RegionOverlay } from "./render/canvasRenderer";
-import { SCENARIOS, scenarioById, type Readout } from "./scenarios";
+import { CanvasRenderer } from "./render/canvasRenderer";
+import {
+  SCENARIOS,
+  scenarioById,
+  regionToRenderer,
+  type Readout,
+  type Region,
+} from "./scenarios";
 import type { Simulation } from "./sim/simulation";
+import { DEFAULT_ANCHORS, formatTemperature, type UnitAnchors, type UnitMode } from "./units";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const renderer = new CanvasRenderer(canvas);
@@ -20,9 +27,9 @@ const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 const readoutsEl = document.getElementById("readouts") as HTMLElement;
 const dilationSlider = document.getElementById("dilation") as HTMLInputElement;
 const dilationLabel = document.getElementById("dilationLabel") as HTMLElement;
+const unitSel = document.getElementById("units") as HTMLSelectElement;
+const expertRow = document.getElementById("expertRow") as HTMLElement;
 
-// Substeps-per-frame mapping. 0 → paused. Powers-of-two ladder from 1× to 32×.
-// (Rendered frames stay at ~60 fps; more substeps means faster sim time.)
 const SUBSTEP_LADDER = [0, 1, 2, 4, 8, 16, 32];
 
 for (const s of SCENARIOS) {
@@ -37,9 +44,24 @@ let sim: Simulation;
 let tick: (step: number) => void;
 let readouts: Readout[] = [];
 let readoutEls: HTMLElement[] = [];
-let temperatureScale = 2.0;
-let regions: RegionOverlay[] = [];
+let anchors: UnitAnchors = DEFAULT_ANCHORS;
+let cMin: number | undefined;
+let cMax: number | undefined;
+let regions: Region[] = [];
 let currentId = SCENARIOS[0]!.id;
+
+function unitMode(): UnitMode {
+  const v = unitSel.value;
+  return v === "F" ? "F" : v === "star" ? "star" : "C";
+}
+function formatT(tStar: number): string {
+  return formatTemperature(tStar, unitMode(), anchors, 1);
+}
+
+function renderReadout(r: Readout): string {
+  if (r.v.kind === "temperature") return formatT(r.v.value());
+  return r.v.value();
+}
 
 function load(id: string) {
   currentId = id;
@@ -49,8 +71,10 @@ function load(id: string) {
   sim = built.sim;
   tick = built.tick;
   readouts = built.readouts ?? [];
-  temperatureScale = built.temperatureScale ?? 2.0;
+  anchors = built.unitAnchors ?? DEFAULT_ANCHORS;
   regions = built.regions ?? [];
+  cMin = built.cMin;
+  cMax = built.cMax;
   readoutsEl.innerHTML = "";
   readoutEls = [];
   for (const r of readouts) {
@@ -61,7 +85,7 @@ function load(id: string) {
     const label = document.createElement("span");
     label.textContent = r.label;
     const val = document.createElement("span");
-    val.textContent = r.value();
+    val.textContent = renderReadout(r);
     stat.appendChild(label);
     stat.appendChild(val);
     row.appendChild(stat);
@@ -97,6 +121,11 @@ function updateDilationLabel() {
 dilationSlider.addEventListener("input", updateDilationLabel);
 updateDilationLabel();
 
+unitSel.addEventListener("change", () => {
+  // Show/hide expert (reduced-units) diagnostics based on mode.
+  expertRow.style.display = unitSel.value === "star" ? "block" : "none";
+});
+
 let lastFrame = performance.now();
 let fpsAvg = 60;
 
@@ -114,11 +143,14 @@ function frame(now: number) {
     }
   }
 
+  const rendererRegions = regions.map((r) => regionToRenderer(r, formatT));
   renderer.draw(sim, {
-    temperatureScale,
     atomRadius: 0.5,
-    regions,
+    anchors,
+    regions: rendererRegions,
     drawLegend: true,
+    cMin,
+    cMax,
   });
 
   const d = sim.diagnostics();
@@ -127,10 +159,10 @@ function frame(now: number) {
   keEl.textContent = d.kineticEnergy.toFixed(2);
   peEl.textContent = d.potentialEnergy.toFixed(2);
   eEl.textContent = d.totalEnergy.toFixed(2);
-  tmEl.textContent = d.temperature.toFixed(3);
+  tmEl.textContent = formatT(d.temperature);
   fpsEl.textContent = fpsAvg.toFixed(0);
   for (let i = 0; i < readouts.length; i++) {
-    readoutEls[i]!.textContent = readouts[i]!.value();
+    readoutEls[i]!.textContent = renderReadout(readouts[i]!);
   }
 
   requestAnimationFrame(frame);
