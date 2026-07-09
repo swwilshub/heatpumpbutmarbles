@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Heat Pump but Marbles</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12; color: #e6e8ec; font-family: system-ui, -apple-system, sans-serif; }
+      #app { display: flex; height: 100%; }
+      #stage { flex: 1; display: flex; align-items: center; justify-content: center; }
+      canvas { display: block; background: #0b0d12; image-rendering: pixelated; border: 1px solid #1e222b; }
+      #panel { width: 280px; padding: 12px 14px; border-left: 1px solid #1e222b; overflow-y: auto; font-size: 13px; }
+      #panel h1 { font-size: 14px; margin: 0 0 8px 0; letter-spacing: 0.02em; }
+      #panel .row { margin: 6px 0; }
+      #panel label { display: block; font-size: 11px; color: #8b93a1; margin-bottom: 2px; }
+      #panel input[type=range] { width: 100%; }
+      #panel .stat { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+      button { background: #1a1e28; color: #e6e8ec; border: 1px solid #2b3040; padding: 4px 10px; border-radius: 4px; cursor: pointer; margin-right: 4px; }
+      button:hover { background: #232937; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage"><canvas id="canvas" width="720" height="540"></canvas></div>
+      <div id="panel">
+        <h1>heat pump but marbles</h1>
+        <div class="row">
+          <button id="pause">pause</button>
+          <button id="step">step</button>
+          <button id="reset">reset</button>
+        </div>
+        <div class="row">
+          <label>potential</label>
+          <select id="potential">
+            <option value="lj">Lennard-Jones (attractive)</option>
+            <option value="wca">WCA (purely repulsive)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>temperature (T*)</label>
+          <input id="temp" type="range" min="0.2" max="3.0" step="0.05" value="1.0" />
+          <div class="stat"><span>T set</span><span id="tempVal">1.00</span></div>
+        </div>
+        <div class="row"><div class="stat"><span>step</span><span id="stepStat">0</span></div></div>
+        <div class="row"><div class="stat"><span>N</span><span id="nStat">0</span></div></div>
+        <div class="row"><div class="stat"><span>KE</span><span id="keStat">0</span></div></div>
+        <div class="row"><div class="stat"><span>PE</span><span id="peStat">0</span></div></div>
+        <div class="row"><div class="stat"><span>E</span><span id="eStat">0</span></div></div>
+        <div class="row"><div class="stat"><span>T meas</span><span id="tmStat">0</span></div></div>
+        <div class="row"><div class="stat"><span>fps</span><span id="fpsStat">0</span></div></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
