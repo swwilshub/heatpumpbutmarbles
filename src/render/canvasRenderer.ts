@@ -45,7 +45,7 @@ export class CanvasRenderer {
     // Flip Y so +y is up on screen (world is bottom-origin like a physics diagram)
     const sy = (y: number) => height - (y * scale + offsetY);
 
-    // Segments
+    // Static segments (walls)
     ctx.strokeStyle = "#3a4459";
     ctx.lineWidth = Math.max(1, 0.15 * scale);
     ctx.lineCap = "round";
@@ -55,6 +55,18 @@ export class CanvasRenderer {
       ctx.lineTo(sx(s.bx), sy(s.by));
     }
     ctx.stroke();
+
+    // Moving segments (compressor blades) — a warmer tone so they stand out.
+    if (sim.movingSegments.length > 0) {
+      ctx.strokeStyle = "#c47c4a";
+      ctx.lineWidth = Math.max(2, 0.22 * scale);
+      ctx.beginPath();
+      for (const m of sim.movingSegments) {
+        ctx.moveTo(sx(m.ax), sy(m.ay));
+        ctx.lineTo(sx(m.bx), sy(m.by));
+      }
+      ctx.stroke();
+    }
 
     // Atoms. Colour by v^2 / (2 * T_scale) — matches speed distribution at scale.
     const r = opts.atomRadius * scale;

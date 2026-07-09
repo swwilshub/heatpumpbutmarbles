@@ -1,5 +1,5 @@
 import { CanvasRenderer } from "./render/canvasRenderer";
-import { SCENARIOS, scenarioById } from "./scenarios";
+import { SCENARIOS, scenarioById, type Readout } from "./scenarios";
 import type { Simulation } from "./sim/simulation";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -17,6 +17,7 @@ const blurbEl = document.getElementById("blurb") as HTMLElement;
 const pauseBtn = document.getElementById("pause") as HTMLButtonElement;
 const stepBtn = document.getElementById("step") as HTMLButtonElement;
 const resetBtn = document.getElementById("reset") as HTMLButtonElement;
+const readoutsEl = document.getElementById("readouts") as HTMLElement;
 
 for (const s of SCENARIOS) {
   const opt = document.createElement("option");
@@ -28,6 +29,8 @@ for (const s of SCENARIOS) {
 let paused = false;
 let sim: Simulation;
 let tick: (step: number) => void;
+let readouts: Readout[] = [];
+let readoutEls: HTMLElement[] = [];
 let currentId = SCENARIOS[0]!.id;
 
 function load(id: string) {
@@ -37,6 +40,24 @@ function load(id: string) {
   const built = scenario.build();
   sim = built.sim;
   tick = built.tick;
+  readouts = built.readouts ?? [];
+  readoutsEl.innerHTML = "";
+  readoutEls = [];
+  for (const r of readouts) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const stat = document.createElement("div");
+    stat.className = "stat";
+    const label = document.createElement("span");
+    label.textContent = r.label;
+    const val = document.createElement("span");
+    val.textContent = r.value();
+    stat.appendChild(label);
+    stat.appendChild(val);
+    row.appendChild(stat);
+    readoutsEl.appendChild(row);
+    readoutEls.push(val);
+  }
 }
 
 load(currentId);
@@ -85,6 +106,9 @@ function frame(now: number) {
   eEl.textContent = d.totalEnergy.toFixed(2);
   tmEl.textContent = d.temperature.toFixed(3);
   fpsEl.textContent = fpsAvg.toFixed(0);
+  for (let i = 0; i < readouts.length; i++) {
+    readoutEls[i]!.textContent = readouts[i]!.value();
+  }
 
   requestAnimationFrame(frame);
 }
