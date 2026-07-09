@@ -1,4 +1,4 @@
-import { CanvasRenderer } from "./render/canvasRenderer";
+import { CanvasRenderer, type RegionOverlay } from "./render/canvasRenderer";
 import { SCENARIOS, scenarioById, type Readout } from "./scenarios";
 import type { Simulation } from "./sim/simulation";
 
@@ -18,6 +18,12 @@ const pauseBtn = document.getElementById("pause") as HTMLButtonElement;
 const stepBtn = document.getElementById("step") as HTMLButtonElement;
 const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 const readoutsEl = document.getElementById("readouts") as HTMLElement;
+const dilationSlider = document.getElementById("dilation") as HTMLInputElement;
+const dilationLabel = document.getElementById("dilationLabel") as HTMLElement;
+
+// Substeps-per-frame mapping. 0 → paused. Powers-of-two ladder from 1× to 32×.
+// (Rendered frames stay at ~60 fps; more substeps means faster sim time.)
+const SUBSTEP_LADDER = [0, 1, 2, 4, 8, 16, 32];
 
 for (const s of SCENARIOS) {
   const opt = document.createElement("option");
@@ -31,6 +37,8 @@ let sim: Simulation;
 let tick: (step: number) => void;
 let readouts: Readout[] = [];
 let readoutEls: HTMLElement[] = [];
+let temperatureScale = 2.0;
+let regions: RegionOverlay[] = [];
 let currentId = SCENARIOS[0]!.id;
 
 function load(id: string) {
@@ -41,6 +49,8 @@ function load(id: string) {
   sim = built.sim;
   tick = built.tick;
   readouts = built.readouts ?? [];
+  temperatureScale = built.temperatureScale ?? 2.0;
+  regions = built.regions ?? [];
   readoutsEl.innerHTML = "";
   readoutEls = [];
   for (const r of readouts) {
@@ -76,7 +86,17 @@ stepBtn.addEventListener("click", () => {
 resetBtn.addEventListener("click", () => load(currentId));
 scenarioSel.addEventListener("change", () => load(scenarioSel.value));
 
-const SUBSTEPS = 4;
+function currentSubsteps(): number {
+  const idx = Math.max(0, Math.min(SUBSTEP_LADDER.length - 1, Number(dilationSlider.value)));
+  return SUBSTEP_LADDER[idx]!;
+}
+function updateDilationLabel() {
+  const s = currentSubsteps();
+  dilationLabel.textContent = s === 0 ? "paused" : `${s}× (${s} steps / frame)`;
+}
+dilationSlider.addEventListener("input", updateDilationLabel);
+updateDilationLabel();
+
 let lastFrame = performance.now();
 let fpsAvg = 60;
 
@@ -86,19 +106,22 @@ function frame(now: number) {
   const fps = 1000 / Math.max(1, dtMs);
   fpsAvg = fpsAvg * 0.9 + fps * 0.1;
 
-  if (!paused) {
-    for (let s = 0; s < SUBSTEPS; s++) {
+  const substeps = currentSubsteps();
+  if (!paused && substeps > 0) {
+    for (let s = 0; s < substeps; s++) {
       tick(sim.step);
       sim.advance(1);
     }
   }
 
-  // Colour scale — use the running measured T so hot atoms read hot at
-  // whatever temperature the scenario is currently at.
-  const d = sim.diagnostics();
-  const tScale = Math.max(0.3, d.temperature);
-  renderer.draw(sim, { temperatureScale: tScale, atomRadius: 0.5 });
+  renderer.draw(sim, {
+    temperatureScale,
+    atomRadius: 0.5,
+    regions,
+    drawLegend: true,
+  });
 
+  const d = sim.diagnostics();
   stepEl.textContent = String(d.step);
   nEl.textContent = String(sim.n);
   keEl.textContent = d.kineticEnergy.toFixed(2);

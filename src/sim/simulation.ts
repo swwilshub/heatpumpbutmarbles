@@ -69,21 +69,45 @@ export class ThermostatGroup {
 // Velocity-rescale thermostat — simplest energy-conserving-per-step method
 // for equilibration. Do NOT use during a measurement window where you want
 // natural energy exchange.
-export function rescaleToTemperature(sim: Simulation, targetT: number): void {
-  const n = sim.n;
-  if (n === 0) return;
-  let ke = 0;
+//
+// IMPORTANT: pass `indices` for any scenario that has tethered wall atoms
+// (or a compressor blade making some atoms cold). Without indices the
+// rescale averages over all atoms — wall atoms starting with v=0 pull the
+// measured T down, and the correction factor over-scales the gas atoms.
+export function rescaleToTemperature(
+  sim: Simulation,
+  targetT: number,
+  indices?: readonly number[]
+): void {
   const velX = sim.velX;
   const velY = sim.velY;
-  for (let i = 0; i < n; i++) {
-    ke += velX[i]! * velX[i]! + velY[i]! * velY[i]!;
+  let ke = 0;
+  let count = 0;
+  if (indices) {
+    for (const i of indices) {
+      ke += velX[i]! * velX[i]! + velY[i]! * velY[i]!;
+      count++;
+    }
+  } else {
+    count = sim.n;
+    for (let i = 0; i < count; i++) {
+      ke += velX[i]! * velX[i]! + velY[i]! * velY[i]!;
+    }
   }
-  const measuredT = ke / (2 * n);
+  if (count === 0) return;
+  const measuredT = ke / (2 * count);
   if (measuredT <= 0) return;
   const s = Math.sqrt(targetT / measuredT);
-  for (let i = 0; i < n; i++) {
-    velX[i] = velX[i]! * s;
-    velY[i] = velY[i]! * s;
+  if (indices) {
+    for (const i of indices) {
+      velX[i] = velX[i]! * s;
+      velY[i] = velY[i]! * s;
+    }
+  } else {
+    for (let i = 0; i < count; i++) {
+      velX[i] = velX[i]! * s;
+      velY[i] = velY[i]! * s;
+    }
   }
 }
 
