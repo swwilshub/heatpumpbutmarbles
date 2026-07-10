@@ -634,7 +634,13 @@ function fullHeatPump(): Scenario["build"] {
       return anchors.t1_star + m * (c - anchors.t1_celsius);
     };
     const state = {
-      pistonSpeed: 0.25,
+      // Piston speed matters for whether compression reads as adiabatic
+      // (gas heats) or isothermal (gas doesn't). Long slow strokes were
+      // nearly isothermal → no heat pumping. 0.6 is a compromise: fast
+      // enough that the gas visibly heats on the push stroke, slow enough
+      // that a cycle takes a few seconds of wall clock at 8× dilation
+      // (users can watch it).
+      pistonSpeed: 0.6,
       condFan: 2.0,
       evapFan: 2.0,
       hotResC: 40,
@@ -664,11 +670,18 @@ function fullHeatPump(): Scenario["build"] {
     const condX0 = 36, condY0 = 20, condX1 = 58, condY1 = 32;
     const valveX0 = 36, valveY0 = 2, valveX1 = 58, valveY1 = 14;
     const evapX0 = 2, evapY0 = 2, evapX1 = 24, evapY1 = 14;
-    // Pipe corridor centres/widths
-    const dischargeY = 26, dischargeHW = 1.0;     // 2σ wide horizontal pipe
-    const liquidX = 47, liquidHW = 1.0;            // 2σ wide vertical pipe
-    const suctionX = 13, suctionHW = 1.0;          // 2σ wide vertical pipe
-    const expansionY = 8, expansionHW = 0.8;       // 1.6σ NARROW pipe — the Joule-Thomson throttle
+    // Pipe corridor centres/widths.
+    // Note on width: an atom in a 2σ pipe centre is 1.0σ from each wall,
+    // which is INSIDE the WCA cutoff (1.122σ). Both walls repel it
+    // simultaneously and it can't flow. Bumping the "wide" pipes to 3σ
+    // gives atoms a 1.5σ clearance at the centre — outside the cutoff,
+    // no wall repulsion, free flow. Expansion stays narrower as the
+    // throttle but at 2.5σ (1.25σ clearance) it's just past the cutoff,
+    // so gas passes but with the extra collisions that give the JT drop.
+    const dischargeY = 26, dischargeHW = 1.5;     // 3σ wide horizontal pipe
+    const liquidX = 47, liquidHW = 1.5;            // 3σ wide vertical pipe
+    const suctionX = 13, suctionHW = 1.5;          // 3σ wide vertical pipe
+    const expansionY = 8, expansionHW = 1.25;      // 2.5σ NARROW pipe — the Joule-Thomson throttle
 
     // === Compressor chamber walls ==========================================
     // Full box except the right wall has a gap for the discharge pipe, and
@@ -743,11 +756,13 @@ function fullHeatPump(): Scenario["build"] {
     const addToRef = (start: number) => {
       for (let i = start; i < sim.n; i++) refIdx.push(i);
     };
-    // Compressor chamber
+    // Compressor chamber — seed the RIGHT side (in the piston's swept
+    // zone), leaving the piston-startup region + suction gap contact
+    // clear so nothing is inside a moving segment's cutoff at t=0.
     let first = sim.n;
     seedLattice(sim, {
-      xMin: compX0 + 1.5, yMin: compY0 + 1,
-      xMax: compX1 - 5, yMax: compY1 - 1,
+      xMin: suctionX + suctionHW + 3, yMin: compY0 + 1,
+      xMax: compX1 - 1, yMax: compY1 - 1,
     }, 1.35, 1.0, new Rng(101));
     addToRef(first);
     // Condenser chamber (moderately dense — post-compression)
@@ -813,23 +828,33 @@ function fullHeatPump(): Scenario["build"] {
     sim.thermostats.push(evapTherm);
 
     // === Compressor piston + check valves ==================================
-    // Piston sits inside the compressor chamber, to the RIGHT of the suction
-    // gap. Active rightward stroke drives gas out through the discharge
-    // pipe; fast ghost return-stroke slides left through the empty
-    // compression zone without dragging atoms backward.
+    // Piston sits inside the compressor chamber. On its ACTIVE rightward
+    // stroke it drives gas out through the discharge pipe; on the ghost
+    // return-stroke (active=false) it slides left through the chamber
+    // without touching anything — atoms flow around it as if it weren't
+    // there.
     //
-    // Ghost return alone is NOT enough — it stops the piston from pushing
+    // Ghost return alone is not enough — it stops the piston from PUSHING
     // atoms back, but nothing stops atoms in the discharge pipe from
-    // flowing back INTO the compressor chamber under a mild pressure
-    // gradient. Real compressors have one-way check valves for exactly this
-    // reason. We model them as zero-velocity MovingSegments occupying the
-    // discharge gap and the suction gap, toggled active/inactive in phase
-    // with the piston:
-    //   push (piston →): discharge OPEN (gas leaves), suction CLOSED (no back-fill loop)
-    //   return (piston ←): discharge CLOSED (no back-flow), suction OPEN (fresh gas from evap)
-    const PISTON_LEFT = suctionX + suctionHW + 1.5;
+    // flowing back INTO the compressor chamber under a pressure gradient.
+    // Real compressors have one-way check valves for exactly this reason.
+    // We model them as zero-velocity MovingSegments toggled in phase with
+    // the piston:
+    //   push (piston →): discharge OPEN, suction CLOSED
+    //   return (piston ←): discharge CLOSED, suction OPEN (fresh gas from evap)
+    //
+    // Positioning: PISTON_LEFT sits just RIGHT of the suction gap so the
+    // piston never crosses the suction port during its normal stroke. When
+    // the piston is at PISTON_LEFT and the suction valve is open (during
+    // return), gas flows in through the port at x=13 and fills the space
+    // to the LEFT of the piston, ready to be swept out through discharge
+    // on the next push.
+    // Return-stroke speed: 2.5× the push speed. 6× was so fast the pipes
+    // didn't have time to admit any gas at all; 2× gives return-and-fill
+    // time to actually happen.
+    const PISTON_LEFT = suctionX + suctionHW + 1;
     const PISTON_RIGHT = compX1 - 3;
-    const PISTON_RETURN_FACTOR = 6;
+    const PISTON_RETURN_FACTOR = 2.5;
     const piston = new MovingSegment({
       ax: PISTON_LEFT, ay: compY0, bx: PISTON_LEFT, by: compY1,
       vax: 0, vay: 0, vbx: 0, vby: 0,
