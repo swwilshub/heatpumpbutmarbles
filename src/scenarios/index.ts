@@ -30,6 +30,8 @@ export interface Region {
   yMax: number;
   v?: ReadoutValue;
   tint?: string;
+  tintByT?: () => number;
+  tintByTAlpha?: number;
 }
 
 // Helper constructors so scenario code stays readable.
@@ -78,6 +80,35 @@ export interface Scenario {
   };
 }
 
+// Region-mean T from smoothed v² over atoms currently inside a bounding box.
+// smoothedV2 tames the exponential fluctuation you get from raw v², so the
+// tint doesn't strobe. Wall atoms (kind=1) are excluded — the box is about
+// the *gas* in the region, not the coil.
+export function meanTInBox(
+  sim: Simulation,
+  xMin: number,
+  yMin: number,
+  xMax: number,
+  yMax: number
+): number {
+  let sum = 0;
+  let count = 0;
+  const posX = sim.posX;
+  const posY = sim.posY;
+  const sv2 = sim.smoothedV2;
+  const kind = sim.kind;
+  const n = sim.n;
+  for (let i = 0; i < n; i++) {
+    if (kind[i] !== 0) continue;
+    const x = posX[i]!;
+    const y = posY[i]!;
+    if (x < xMin || x > xMax || y < yMin || y > yMax) continue;
+    sum += sv2[i]!;
+    count++;
+  }
+  return count > 0 ? sum / (2 * count) : 0;
+}
+
 // Renderer wants its own Region shape (with a `value: () => string`). We
 // bridge on the main-loop side by capturing the current UnitMode.
 export function regionToRenderer(
@@ -91,6 +122,8 @@ export function regionToRenderer(
     xMax: r.xMax,
     yMax: r.yMax,
     tint: r.tint,
+    tintByT: r.tintByT,
+    tintByTAlpha: r.tintByTAlpha,
     value: r.v
       ? r.v.kind === "temperature"
         ? () => fmt(r.v!.value() as number)
@@ -450,12 +483,18 @@ function sandbox(): Scenario["build"] {
       tick,
       unitAnchors: anchors,
       regions: [
-        // Tint only — label lives as a "label" schematic below so it doesn't
-        // collide with the "coil" label at the top of the same strip.
+        // Reservoir strip — dynamic tint tracks the coil's actual temperature.
         {
           label: "",
           xMin: -3, yMin: 0, xMax: 0, yMax: CH_H,
-          tint: "rgba(210,80,90,0.10)",
+          tintByT: () => sim.temperatureOf(cond.atomIndices),
+          tintByTAlpha: 0.32,
+        },
+        // Chamber background — dynamic tint from mean gas T.
+        {
+          label: "",
+          xMin: 0, yMin: 0, xMax: PISTON_RIGHT, yMax: CH_H,
+          tintByT: () => sim.temperatureOf(gasIdx),
         },
         {
           label: "refrigerant",
@@ -880,16 +919,43 @@ function fullHeatPump(): Scenario["build"] {
       cMin: -30,
       cMax: 120,
       regions: [
-        // Reservoir tints — indoor (hot) right of condenser, outdoor (cold) left of evap.
+        // Live temperature tints — each chamber's background colour tracks
+        // the mean T of the marbles currently inside it. Warmer than the
+        // reservoir setpoint → red-orange; colder → deep blue. This is the
+        // real per-*population* temperature; individual marbles are all
+        // neutral white with their motion carrying the "heat".
+        {
+          label: "",
+          xMin: compX0, yMin: compY0, xMax: compX1, yMax: compY1,
+          tintByT: () => meanTInBox(sim, compX0, compY0, compX1, compY1),
+        },
+        {
+          label: "",
+          xMin: condX0, yMin: condY0, xMax: condX1, yMax: condY1,
+          tintByT: () => meanTInBox(sim, condX0, condY0, condX1, condY1),
+        },
+        {
+          label: "",
+          xMin: valveX0, yMin: valveY0, xMax: valveX1, yMax: valveY1,
+          tintByT: () => meanTInBox(sim, valveX0, valveY0, valveX1, valveY1),
+        },
+        {
+          label: "",
+          xMin: evapX0, yMin: evapY0, xMax: evapX1, yMax: evapY1,
+          tintByT: () => meanTInBox(sim, evapX0, evapY0, evapX1, evapY1),
+        },
+        // Exterior reservoirs
         {
           label: "",
           xMin: indoorX0, yMin: indoorY0, xMax: indoorX1, yMax: indoorY1,
-          tint: "rgba(210,80,90,0.14)",
+          tintByT: () => meanTInBox(sim, indoorX0, indoorY0, indoorX1, indoorY1),
+          tintByTAlpha: 0.32,
         },
         {
           label: "",
           xMin: outdoorX0, yMin: outdoorY0, xMax: outdoorX1, yMax: outdoorY1,
-          tint: "rgba(70,130,180,0.16)",
+          tintByT: () => meanTInBox(sim, outdoorX0, outdoorY0, outdoorX1, outdoorY1),
+          tintByTAlpha: 0.32,
         },
       ],
       readouts: [
@@ -1232,16 +1298,25 @@ function closedLoop(): Scenario["build"] {
       cMin: -30,
       cMax: 120,
       regions: [
-        // Reservoir tints — hot above the top, cold below the bottom
+        // Dynamic reservoir tints from the coil temperatures
         {
           label: "",
           xMin: CX0, yMin: OY, xMax: CX1, yMax: OY + 2.5,
-          tint: "rgba(210,80,90,0.14)",
+          tintByT: () => sim.temperatureOf(cond.atomIndices),
+          tintByTAlpha: 0.36,
         },
         {
           label: "",
           xMin: CX0, yMin: -2.5, xMax: CX1, yMax: 0,
-          tint: "rgba(70,130,180,0.16)",
+          tintByT: () => sim.temperatureOf(evap.atomIndices),
+          tintByTAlpha: 0.36,
+        },
+        // Ring channel tint from refrigerant mean T
+        {
+          label: "",
+          xMin: 0, yMin: 0, xMax: OX, yMax: OY,
+          tintByT: () => sim.temperatureOf(gasIdx),
+          tintByTAlpha: 0.18,
         },
       ],
       readouts: [

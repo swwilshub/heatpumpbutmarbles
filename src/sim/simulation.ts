@@ -230,9 +230,23 @@ export class Simulation {
       const smoothedV2 = this.smoothedV2;
       const alpha = this.smoothAlpha;
       const oneMinusAlpha = 1 - alpha;
+      // Velocity cap — hard safety net. If a single-step force spike ever
+      // slips past the pair-force cap (extreme geometry transient), this
+      // catches the resulting runaway atom before it corrupts the mean-T
+      // readouts. Threshold well above any realistic thermal speed at demo
+      // temperatures (v_thermal ≈ 1–3 in reduced units for the T* range
+      // we run at); cap at 20 = v² 400.
+      const V_MAX = 20;
+      const V_MAX2 = V_MAX * V_MAX;
       for (let i = 0; i < n; i++) {
-        const vx = velX[i]! + halfDt * accX[i]!;
-        const vy = velY[i]! + halfDt * accY[i]!;
+        let vx = velX[i]! + halfDt * accX[i]!;
+        let vy = velY[i]! + halfDt * accY[i]!;
+        const v2 = vx * vx + vy * vy;
+        if (v2 > V_MAX2) {
+          const s = V_MAX / Math.sqrt(v2);
+          vx *= s;
+          vy *= s;
+        }
         velX[i] = vx;
         velY[i] = vy;
         smoothedV2[i] = alpha * smoothedV2[i]! + oneMinusAlpha * (vx * vx + vy * vy);
@@ -271,16 +285,34 @@ export class Simulation {
     const uShift = this.uShift;
     // Pair forces — apply to ALL kinds (wall atoms interact with refrigerant
     // via the same LJ pair force, which is how thermal conduction happens).
+    // Pair force cap: at r ≪ σ (which can happen for one frame at the
+    // instant a moving segment reactivates atop an atom) the raw r⁻¹³ term
+    // is astronomical and Verlet cannot integrate it — the atom is shot to
+    // relativistic speeds in a single step. Cap the force magnitude at
+    // 500ε/σ, the same MD safety net used in barriers.ts and the moving
+    // segments. This preserves M1's energy-conservation test at typical
+    // densities/temperatures (forces stay well below the cap there); the
+    // cap only clips the pathological one-in-a-million transient.
+    const F_CAP = 500;
+    const F_CAP2 = F_CAP * F_CAP;
     this.cells.forEachPair((i, j) => {
       const rx = posX[i]! - posX[j]!;
       const ry = posY[i]! - posY[j]!;
       const r2 = rx * rx + ry * ry;
       if (r2 >= rCut2 || r2 === 0) return;
       const { u, k } = pairForce(r2, p, uShift, rCut2);
-      accX[i] = accX[i]! + k * rx;
-      accY[i] = accY[i]! + k * ry;
-      accX[j] = accX[j]! - k * rx;
-      accY[j] = accY[j]! - k * ry;
+      let fx = k * rx;
+      let fy = k * ry;
+      const fMag2 = fx * fx + fy * fy;
+      if (fMag2 > F_CAP2) {
+        const s = F_CAP / Math.sqrt(fMag2);
+        fx *= s;
+        fy *= s;
+      }
+      accX[i] = accX[i]! + fx;
+      accY[i] = accY[i]! + fy;
+      accX[j] = accX[j]! - fx;
+      accY[j] = accY[j]! - fy;
       pe += u;
     });
     // Line-segment barriers — skip tethered atoms (kind===1). This is the

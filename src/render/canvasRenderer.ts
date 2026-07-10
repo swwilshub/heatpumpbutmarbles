@@ -3,7 +3,7 @@ import { DEFAULT_ANCHORS, starToCelsius, type UnitAnchors } from "../units";
 import {
   DEFAULT_LEGEND_C_MAX,
   DEFAULT_LEGEND_C_MIN,
-  celsiusColor,
+  celsiusRgba,
   paletteSamplesCelsius,
 } from "./palette";
 
@@ -42,6 +42,12 @@ export interface RegionOverlay {
   // stays unit-agnostic; the caller does the T*→°C formatting.
   value?: () => string;
   tint?: string;
+  // Dynamic temperature-driven tint: value fn returns a reduced T*, the
+  // renderer maps it through the °C anchors + the palette to a live
+  // rgba background. This is how you get "condenser glows red when hot,
+  // evaporator glows blue when cold" as a real per-population signal.
+  tintByT?: () => number;
+  tintByTAlpha?: number;
 }
 
 // Schematic annotations drawn on the canvas so users can see which parts
@@ -114,8 +120,13 @@ export class CanvasRenderer {
 
     if (opts.regions) {
       for (const r of opts.regions) {
-        if (r.tint) {
-          ctx.fillStyle = r.tint;
+        let tint = r.tint;
+        if (r.tintByT) {
+          const c = starToCelsius(r.tintByT(), anchors);
+          tint = celsiusRgba(c, r.tintByTAlpha ?? 0.28);
+        }
+        if (tint) {
+          ctx.fillStyle = tint;
           const x0 = sx(r.xMin);
           const x1 = sx(r.xMax);
           const y0 = sy(r.yMax);
@@ -155,35 +166,31 @@ export class CanvasRenderer {
       ctx.setLineDash([]);
     }
 
-    // Atoms — colour by each atom's TIME-AVERAGED v² (the exponentially
-    // smoothed value the sim maintains). This is the atom's SPEED, not its
-    // "temperature" — a single atom doesn't have a temperature, only a
-    // velocity. The palette maps that speed through the °C anchors so a
-    // fast atom reads warm and a slow one reads cool, but the legend labels
-    // this as "marble speed" rather than "temperature". Region and readout
-    // labels stay in °C — those are aggregates over many atoms, which is
-    // what temperature actually is.
-    //
-    // Smoothing (~30 steps) suppresses the huge instantaneous v²
-    // fluctuations you get from the exponential MB distribution, so what
-    // you see is the atom's local speed, not thermal noise.
+    // Atoms rendered as UNIFORM marbles. A single atom doesn't have a
+    // "temperature" — it has a velocity, which the viewer already sees as
+    // motion on screen. Per-atom colouring was a category error. Temperature
+    // is a population property, and that lives on the region backgrounds
+    // now (tintByT). Wall atoms get a subtle ring to distinguish them from
+    // the free refrigerant.
     const r = opts.atomRadius * scale;
     const posX = sim.posX;
     const posY = sim.posY;
-    const smoothedV2 = sim.smoothedV2;
     const kind = sim.kind;
+    ctx.fillStyle = "#e6e8ec";
     for (let i = 0; i < sim.n; i++) {
-      const tStar = smoothedV2[i]!;
-      const c = starToCelsius(tStar, anchors);
-      ctx.fillStyle = celsiusColor(c);
       ctx.beginPath();
       ctx.arc(sx(posX[i]!), sy(posY[i]!), r, 0, Math.PI * 2);
       ctx.fill();
-      if (kind[i] === 1) {
-        ctx.strokeStyle = "rgba(255,255,255,0.35)";
-        ctx.lineWidth = Math.max(1, 0.06 * scale);
-        ctx.stroke();
-      }
+    }
+    // Second pass for wall-atom rings so the fill loop stays cache-friendly
+    // and we don't spam strokeStyle changes.
+    ctx.strokeStyle = "rgba(180,200,220,0.55)";
+    ctx.lineWidth = Math.max(1, 0.08 * scale);
+    for (let i = 0; i < sim.n; i++) {
+      if (kind[i] !== 1) continue;
+      ctx.beginPath();
+      ctx.arc(sx(posX[i]!), sy(posY[i]!), r, 0, Math.PI * 2);
+      ctx.stroke();
     }
 
     if (opts.regions) {
@@ -348,10 +355,9 @@ export class CanvasRenderer {
     cMin: number,
     cMax: number
   ): void {
-    // Legend maps ATOM SPEED to a colour. A single atom has a velocity, not a
-    // temperature — but the °C ticks are the equivalent T if the whole gas
-    // were at that speed, which is a useful intuition for the eye. Legend
-    // header calls it out.
+    // Legend now maps REGION temperature (mean over many marbles) to a
+    // background colour. Marbles themselves are uniform white and carry
+    // "heat" through their motion (velocity), which the eye already reads.
     ctx.fillStyle = "#0b0d12";
     ctx.fillRect(0, y, w, h);
     const samples = paletteSamplesCelsius(96, cMin, cMax);
@@ -359,16 +365,12 @@ export class CanvasRenderer {
     const barY = y + 14;
     const barW = w - 30;
     const barH = 12;
-    // Header row above the bar
     ctx.font = "10px system-ui, sans-serif";
     ctx.fillStyle = "#8b93a1";
     ctx.textBaseline = "top";
     ctx.textAlign = "left";
-    ctx.fillText("marble speed", barX, y + 2);
-    ctx.textAlign = "right";
-    ctx.fillText("(°C = mean of many marbles)", barX + barW, y + 2);
+    ctx.fillText("region temperature (mean of many marbles)", barX, y + 2);
     ctx.textAlign = "left";
-    // slow → fast text ends
     ctx.font = "9px system-ui, sans-serif";
     ctx.fillStyle = "#c7cdd6";
     // Colour bar

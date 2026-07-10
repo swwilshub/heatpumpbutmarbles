@@ -16,23 +16,34 @@ const STOPS: readonly { c: number; rgb: [number, number, number] }[] = [
 ];
 
 export function celsiusColor(c: number): string {
-  // Find surrounding stops. Clamp to endpoints.
+  const [r, g, b] = celsiusRgbTuple(c);
+  return `rgb(${r},${g},${b})`;
+}
+
+// Same interpolation but returns rgba for use as a region background tint.
+export function celsiusRgba(c: number, alpha: number): string {
+  const [r, g, b] = celsiusRgbTuple(c);
+  return `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+}
+
+function celsiusRgbTuple(c: number): [number, number, number] {
   const first = STOPS[0]!;
   const last = STOPS[STOPS.length - 1]!;
-  if (c <= first.c) return rgb(first.rgb);
-  if (c >= last.c) return rgb(last.rgb);
+  if (c <= first.c) return first.rgb;
+  if (c >= last.c) return last.rgb;
   for (let i = 0; i < STOPS.length - 1; i++) {
     const a = STOPS[i]!;
     const b = STOPS[i + 1]!;
     if (c >= a.c && c <= b.c) {
       const f = (c - a.c) / (b.c - a.c);
-      const r = Math.round(a.rgb[0] + (b.rgb[0] - a.rgb[0]) * f);
-      const g = Math.round(a.rgb[1] + (b.rgb[1] - a.rgb[1]) * f);
-      const bl = Math.round(a.rgb[2] + (b.rgb[2] - a.rgb[2]) * f);
-      return `rgb(${r},${g},${bl})`;
+      return [
+        Math.round(a.rgb[0] + (b.rgb[0] - a.rgb[0]) * f),
+        Math.round(a.rgb[1] + (b.rgb[1] - a.rgb[1]) * f),
+        Math.round(a.rgb[2] + (b.rgb[2] - a.rgb[2]) * f),
+      ];
     }
   }
-  return rgb(last.rgb);
+  return last.rgb;
 }
 
 function rgb(v: [number, number, number]): string {
