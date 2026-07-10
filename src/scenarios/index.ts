@@ -52,6 +52,14 @@ export interface ScenarioSlider {
   onChange: (v: number) => void;
 }
 
+// One line of the T-history plot in the sidebar. Value fn returns a T* the
+// UI converts to °C using the scenario's anchors.
+export interface ScenarioSeries {
+  name: string;
+  colour: string;
+  value: () => number;
+}
+
 export interface Scenario {
   id: string;
   name: string;
@@ -66,6 +74,7 @@ export interface Scenario {
     cMax?: number;
     sliders?: ScenarioSlider[];
     parts?: PartSchematic[];
+    series?: ScenarioSeries[];
   };
 }
 
@@ -456,25 +465,25 @@ function sandbox(): Scenario["build"] {
       ],
       readouts: [
         {
-          label: "coil surface T",
+          label: "coil temperature",
           v: T(() => sim.temperatureOf(cond.atomIndices)),
         },
         {
-          label: "reservoir target",
-          v: T(() => cToT(state.reservoirC)),
+          label: "gas temperature",
+          v: T(() => sim.temperatureOf(gasIdx)),
         },
         {
-          label: "electricity used (W)",
+          label: "electricity used",
           v: R(() => (started ? piston.workInput.toFixed(1) : "—")),
         },
         {
-          label: "heat moved (Q)",
+          label: "heat delivered",
           v: R(() =>
             started ? (condTherm.energyOut - condTherm.energyIn).toFixed(1) : "—"
           ),
         },
         {
-          label: "COP (heat / electricity)",
+          label: "efficiency (COP)",
           v: R(() => {
             if (!started || piston.workInput <= 0) return "—";
             return (
@@ -482,10 +491,11 @@ function sandbox(): Scenario["build"] {
             ).toFixed(2);
           }),
         },
-        {
-          label: "atoms (charge)",
-          v: R(() => String(gasIdx.length)),
-        },
+      ],
+      series: [
+        { name: "coil", colour: "#e07a5f", value: () => sim.temperatureOf(cond.atomIndices) },
+        { name: "gas", colour: "#f0c060", value: () => sim.temperatureOf(gasIdx) },
+        { name: "setpoint", colour: "#7091b8", value: () => cToT(state.reservoirC) },
       ],
       sliders: [
         {
@@ -825,15 +835,15 @@ function fullHeatPump(): Scenario["build"] {
       ],
       readouts: [
         {
-          label: "condenser coil T",
+          label: "hot coil (indoors)",
           v: T(() => sim.temperatureOf(condHx.atomIndices)),
         },
         {
-          label: "evaporator coil T",
+          label: "cold coil (outdoors)",
           v: T(() => sim.temperatureOf(evapHx.atomIndices)),
         },
         {
-          label: "compressor work",
+          label: "electricity used",
           v: R(() => (started ? piston.workInput.toFixed(1) : "—")),
         },
         // In an EXPLODED schematic the sub-chambers are isolated so these Q
@@ -841,25 +851,31 @@ function fullHeatPump(): Scenario["build"] {
         // coupled Q_hot/Q_cold of a closed refrigeration loop. Labelled
         // accordingly so users don't try to compute COP off them.
         {
-          label: "condenser Q (local)",
+          label: "heat exchanged, condenser",
           v: R(() =>
             started ? (condTherm.energyOut - condTherm.energyIn).toFixed(1) : "—"
           ),
         },
         {
-          label: "evaporator Q (local)",
+          label: "heat exchanged, evaporator",
           v: R(() =>
             started ? (evapTherm.energyIn - evapTherm.energyOut).toFixed(1) : "—"
           ),
         },
         {
-          label: "valve density — high side",
+          label: "high-pressure density",
           v: R(() => (valveHighIdx.length / ((valveMidX - valveX0 - 1) * (valveY1 - valveY0 - 2))).toFixed(2)),
         },
         {
-          label: "valve density — low side",
+          label: "low-pressure density",
           v: R(() => (valveLowIdx.length / ((valveX1 - valveMidX - 1) * (valveY1 - valveY0 - 2))).toFixed(2)),
         },
+      ],
+      series: [
+        { name: "compressor gas", colour: "#f0c060", value: () => sim.temperatureOf(compGasIdx) },
+        { name: "hot coil", colour: "#e07a5f", value: () => sim.temperatureOf(condHx.atomIndices) },
+        { name: "cold coil", colour: "#5f8fb8", value: () => sim.temperatureOf(evapHx.atomIndices) },
+        { name: "evaporator gas", colour: "#7091b8", value: () => sim.temperatureOf(evapGasIdx) },
       ],
       sliders: [
         {
@@ -1189,31 +1205,31 @@ function closedLoop(): Scenario["build"] {
       ],
       readouts: [
         {
-          label: "condenser coil T",
+          label: "hot coil (indoors)",
           v: T(() => sim.temperatureOf(cond.atomIndices)),
         },
         {
-          label: "evaporator coil T",
+          label: "cold coil (outdoors)",
           v: T(() => sim.temperatureOf(evap.atomIndices)),
         },
         {
-          label: "electricity used (W)",
+          label: "electricity used",
           v: R(() => (started ? pump.workAbsolute.toFixed(1) : "—")),
         },
         {
-          label: "Q_hot (to indoors)",
+          label: "heat delivered indoors",
           v: R(() =>
             started ? (condTherm.energyOut - condTherm.energyIn).toFixed(1) : "—"
           ),
         },
         {
-          label: "Q_cold (from outdoors)",
+          label: "heat pulled from outside",
           v: R(() =>
             started ? (evapTherm.energyIn - evapTherm.energyOut).toFixed(1) : "—"
           ),
         },
         {
-          label: "COP (Q_hot / W)",
+          label: "efficiency (COP)",
           v: R(() => {
             if (!started || pump.workAbsolute <= 0) return "—";
             const q = condTherm.energyOut - condTherm.energyIn;
@@ -1221,9 +1237,15 @@ function closedLoop(): Scenario["build"] {
           }),
         },
         {
-          label: "pump phase",
+          label: "compressor stroke",
           v: R(() => (started ? phase : "—")),
         },
+      ],
+      series: [
+        { name: "hot coil", colour: "#e07a5f", value: () => sim.temperatureOf(cond.atomIndices) },
+        { name: "cold coil", colour: "#5f8fb8", value: () => sim.temperatureOf(evap.atomIndices) },
+        { name: "indoor set", colour: "rgba(224,122,95,0.4)", value: () => cToT(state.hotResC) },
+        { name: "outdoor set", colour: "rgba(95,143,184,0.4)", value: () => cToT(state.coldResC) },
       ],
       sliders: [
         {

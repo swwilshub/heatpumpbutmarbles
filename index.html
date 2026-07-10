@@ -34,6 +34,7 @@
           <select id="scenario"></select>
         </div>
         <div id="blurb" style="font-size:11px;color:#8b93a1;line-height:1.4;margin:6px 0 10px;"></div>
+        <div style="font-size:10px;color:#8b93a1;margin:2px 0 8px;">refrigerant: <span id="refrigerantName">propane (R290)</span></div>
         <div class="row">
           <label>units</label>
           <select id="units">
@@ -57,6 +58,11 @@
           <div class="row"><div class="stat"><span>E</span><span id="eStat">0</span></div></div>
         </div>
         <div id="sliders" style="border-top:1px solid #1e222b;margin-top:10px;padding-top:8px;"></div>
+        <div id="graphSection" style="border-top:1px solid #1e222b;margin-top:10px;padding-top:8px;display:none">
+          <div style="font-size:11px;color:#8b93a1;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">temperature over time</div>
+          <canvas id="graphCanvas" width="256" height="88" style="display:block;width:100%;height:88px;background:#0b0d12;border:1px solid #1e222b;border-radius:3px;"></canvas>
+          <div id="graphLegend" style="font-size:10px;color:#c7cdd6;margin-top:4px;line-height:1.5;"></div>
+        </div>
         <div id="readouts" style="border-top:1px solid #1e222b;margin-top:10px;padding-top:8px;"></div>
         <details style="margin-top:14px;font-size:11px;color:#8b93a1;line-height:1.5;">
           <summary style="cursor:pointer;color:#c7cdd6;">why do some atoms briefly look hot?</summary>

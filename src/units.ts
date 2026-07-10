@@ -12,13 +12,20 @@ export interface UnitAnchors {
   t2_celsius: number;
 }
 
+// Propane (R290) calibration. Propane's LJ ε/k_B ≈ 250 K in the standard
+// 2-parameter fit, giving room temperature at T*≈1.19 and typical heat-pump
+// operating temperatures right in the demo's usual T* range. The anchor
+// values below are chosen so 0 °C sits comfortably inside the palette and
+// the compressor's post-compression T (T* ~ 1.5-1.8 in demo) reads as a
+// believable 60-90 °C rather than something absurd.
 export const DEFAULT_ANCHORS: UnitAnchors = {
-  // A scenario-neutral default that gives room-temperature (~15 °C)
-  // near T* = 1, keeps 0 °C on-screen inside the palette, and keeps
-  // typical demo T* values (0.5–2.0) inside a sensible °C window.
-  t1_star: 0.5, t1_celsius: -40,
-  t2_star: 2.0, t2_celsius: 90,
+  t1_star: 0.7, t1_celsius: -40,
+  t2_star: 1.5, t2_celsius: 100,
 };
+
+// Name of the reference refrigerant these anchors are calibrated for.
+// Used in the UI so users know what fluid they're seeing.
+export const REFRIGERANT_NAME = "propane (R290)";
 
 export function starToCelsius(t: number, a: UnitAnchors = DEFAULT_ANCHORS): number {
   const m = (a.t2_celsius - a.t1_celsius) / (a.t2_star - a.t1_star);

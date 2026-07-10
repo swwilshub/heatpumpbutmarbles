@@ -5,10 +5,12 @@ import {
   regionToRenderer,
   type Readout,
   type Region,
+  type ScenarioSeries,
   type ScenarioSlider,
 } from "./scenarios";
 import type { Simulation } from "./sim/simulation";
-import { DEFAULT_ANCHORS, formatTemperature, type UnitAnchors, type UnitMode } from "./units";
+import { DEFAULT_ANCHORS, REFRIGERANT_NAME, formatTemperature, starToCelsius, type UnitAnchors, type UnitMode } from "./units";
+import { TimeSeries, drawTimeSeriesPlot, type PlotSeriesSpec } from "./render/timeSeries";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const renderer = new CanvasRenderer(canvas);
@@ -28,6 +30,15 @@ const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 const readoutsEl = document.getElementById("readouts") as HTMLElement;
 const slidersEl = document.getElementById("sliders") as HTMLElement;
 const dilationSlider = document.getElementById("dilation") as HTMLInputElement;
+const graphSection = document.getElementById("graphSection") as HTMLElement;
+const graphCanvas = document.getElementById("graphCanvas") as HTMLCanvasElement;
+const graphLegend = document.getElementById("graphLegend") as HTMLElement;
+const refrigerantEl = document.getElementById("refrigerantName") as HTMLElement;
+refrigerantEl.textContent = REFRIGERANT_NAME;
+const graphCtx = graphCanvas.getContext("2d")!;
+// 300 samples × ~4 frames/sample = 1200 frames history at 60fps → ~20 seconds
+// of history. Sample rate below throttles per-frame pushes.
+const SERIES_CAPACITY = 300;
 const dilationLabel = document.getElementById("dilationLabel") as HTMLElement;
 const unitSel = document.getElementById("units") as HTMLSelectElement;
 const expertRow = document.getElementById("expertRow") as HTMLElement;
@@ -51,7 +62,14 @@ let cMin: number | undefined;
 let cMax: number | undefined;
 let regions: Region[] = [];
 let parts: PartSchematic[] = [];
+let scenarioSeries: ScenarioSeries[] = [];
+let seriesBuffers: TimeSeries[] = [];
+// Rolling averages used to soften temperature readouts (values jitter with
+// normal thermal fluctuation; 60-sample window at ~4-substep pushes is a
+// second or two of history — enough to stop the last digit dancing).
+const readoutAverages = new Map<Readout, TimeSeries>();
 let currentId = SCENARIOS[0]!.id;
+let frameCount = 0;
 
 function unitMode(): UnitMode {
   const v = unitSel.value;
@@ -62,7 +80,11 @@ function formatT(tStar: number): string {
 }
 
 function renderReadout(r: Readout): string {
-  if (r.v.kind === "temperature") return formatT(r.v.value());
+  if (r.v.kind === "temperature") {
+    const avg = readoutAverages.get(r);
+    const tStar = avg ? avg.mean() : r.v.value();
+    return formatT(tStar);
+  }
   return r.v.value();
 }
 
@@ -79,6 +101,25 @@ function load(id: string) {
   parts = built.parts ?? [];
   cMin = built.cMin;
   cMax = built.cMax;
+  scenarioSeries = built.series ?? [];
+  seriesBuffers = scenarioSeries.map(() => new TimeSeries(SERIES_CAPACITY));
+  graphSection.style.display = scenarioSeries.length > 0 ? "block" : "none";
+  // Build the legend inline once per scenario load.
+  graphLegend.innerHTML = "";
+  for (const s of scenarioSeries) {
+    const chip = document.createElement("span");
+    chip.style.cssText = `display:inline-block;margin-right:10px;`;
+    chip.innerHTML =
+      `<span style="display:inline-block;width:8px;height:8px;background:${s.colour};margin-right:4px;vertical-align:middle;border-radius:2px;"></span>${s.name}`;
+    graphLegend.appendChild(chip);
+  }
+  // Reset rolling averages for the new scenario.
+  readoutAverages.clear();
+  for (const r of readouts) {
+    if (r.v.kind === "temperature") {
+      readoutAverages.set(r, new TimeSeries(60));
+    }
+  }
   readoutsEl.innerHTML = "";
   readoutEls = [];
   for (const r of readouts) {
@@ -192,6 +233,32 @@ function frame(now: number) {
     cMin,
     cMax,
   });
+
+  // Update rolling averages every frame — but only push to the plot
+  // time series every N frames so ~20 seconds of history fits comfortably.
+  for (const r of readouts) {
+    const avg = readoutAverages.get(r);
+    if (avg && r.v.kind === "temperature") avg.push(r.v.value());
+  }
+  frameCount++;
+  if (frameCount % 4 === 0) {
+    for (let i = 0; i < scenarioSeries.length; i++) {
+      const s = scenarioSeries[i]!;
+      const buf = seriesBuffers[i]!;
+      const tStar = s.value();
+      buf.push(starToCelsius(tStar, anchors));
+    }
+  }
+  if (scenarioSeries.length > 0) {
+    const specs: PlotSeriesSpec[] = scenarioSeries.map((s, i) => ({
+      name: s.name,
+      colour: s.colour,
+      series: seriesBuffers[i]!,
+    }));
+    drawTimeSeriesPlot(graphCtx, graphCanvas.width, graphCanvas.height, specs, {
+      yUnit: unitMode() === "F" ? "" : "°C",
+    });
+  }
 
   const d = sim.diagnostics();
   stepEl.textContent = String(d.step);
