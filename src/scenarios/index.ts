@@ -683,7 +683,7 @@ function fullHeatPump(): Scenario["build"] {
     // High-pressure side (left) — dense fill.
     const valveHighFirst = sim.n;
     seedLattice(sim, {
-      xMin: valveX0 + 1, yMin: valveY0 + 1,
+      xMin: valveX0 + 2, yMin: valveY0 + 1,
       xMax: valveMidX - 1, yMax: valveY1 - 1,
     }, 1.05, 1.0, new Rng(303));
     for (let i = valveHighFirst; i < sim.n; i++) valveHighIdx.push(i);
@@ -694,6 +694,25 @@ function fullHeatPump(): Scenario["build"] {
       xMax: valveX1 - 1, yMax: valveY1 - 1,
     }, 1.8, 1.0, new Rng(304));
     for (let i = valveLowFirst; i < sim.n; i++) valveLowIdx.push(i);
+
+    // Valve driver piston — a vertical segment on the far LEFT of the valve
+    // chamber that slowly moves right, pushing high-P atoms through the gap.
+    // Without this the density gradient just decays to equilibrium (there's
+    // no upstream pressure source in an exploded schematic); with it the
+    // valve stays actively pressurised, atoms squeeze through the throat,
+    // and the density gradient persists as a real emergent property.
+    const VALVE_PUSH_LEFT = valveX0 + 1;
+    const VALVE_PUSH_RIGHT = valveMidX - 3;
+    const valvePiston = new MovingSegment({
+      ax: VALVE_PUSH_LEFT, ay: valveY0,
+      bx: VALVE_PUSH_LEFT, by: valveY1,
+      vax: 0, vay: 0, vbx: 0, vby: 0,
+      epsilon: 1, sigma: 1.2,
+    });
+    sim.movingSegments.push(valvePiston);
+    const VALVE_PUSH_SPEED = 0.06;      // slow — pressure driver, not a hammer
+    const VALVE_RETURN_FACTOR = 8;      // fast retract, invisible
+    let valvePhase: "push" | "return" = "push";
 
     // === Evaporator chamber: cold exchanger + cold reservoir on the left ===
     addWallsExceptOne(evapX0, evapY0, evapX1, evapY1, "left");
@@ -731,12 +750,36 @@ function fullHeatPump(): Scenario["build"] {
         piston.workInput = 0;
         condTherm.energyIn = 0; condTherm.energyOut = 0;
         evapTherm.energyIn = 0; evapTherm.energyOut = 0;
+        // Kick the valve piston into its push stroke too.
+        valvePiston.active = true;
+        valvePiston.vax = VALVE_PUSH_SPEED;
+        valvePiston.vbx = VALVE_PUSH_SPEED;
       }
       if (started) {
+        // Compressor bounce
         if (piston.ax < PISTON_LEFT && piston.vax < 0) {
           piston.vax = state.pistonSpeed; piston.vbx = state.pistonSpeed;
         } else if (piston.ax > PISTON_RIGHT && piston.vax > 0) {
           piston.vax = -state.pistonSpeed; piston.vbx = -state.pistonSpeed;
+        }
+        // Valve piston cycle — slow active push right, fast ghost return.
+        // Keeps the high-side pressurised so gas keeps squeezing through
+        // the throat instead of the whole chamber equilibrating.
+        if (valvePhase === "push") {
+          if (valvePiston.ax >= VALVE_PUSH_RIGHT) {
+            valvePhase = "return";
+            valvePiston.active = false;
+            valvePiston.vax = -VALVE_PUSH_SPEED * VALVE_RETURN_FACTOR;
+            valvePiston.vbx = -VALVE_PUSH_SPEED * VALVE_RETURN_FACTOR;
+          }
+        } else {
+          if (valvePiston.ax <= VALVE_PUSH_LEFT) {
+            valvePhase = "push";
+            valvePiston.clearContactZone(sim);
+            valvePiston.active = true;
+            valvePiston.vax = VALVE_PUSH_SPEED;
+            valvePiston.vbx = VALVE_PUSH_SPEED;
+          }
         }
       }
     };
@@ -1286,7 +1329,7 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "full_heat_pump",
     name: "full heat pump — schematic layout",
-    blurb: "All four heat-pump stages laid out as a diagram — compressor, condenser, expansion valve, evaporator — each a separate chamber with its own real physics. Dashed arrows show the schematic flow (hot vapour → liquid → cold mix → cool vapour → back). Coloured by temperature: watch the condenser gas glow yellow against a hot indoor coil, the evaporator gas sit deep blue against a cold outdoor coil, and the valve maintain a density gradient across its narrow gap. The sub-chambers are physically isolated (atoms don't circulate) so each part shows its own local behaviour without geometry compromises.",
+    blurb: "All four heat-pump stages laid out as a diagram — compressor, condenser, expansion valve, evaporator — each a separate chamber with its own real physics. Bold coloured arrows show the schematic flow (hot vapour → liquid → cold mix → cool vapour → back). Coloured by temperature: watch the condenser gas glow yellow against a hot indoor coil, the evaporator gas sit deep blue against a cold outdoor coil, and the valve — with its own upstream pressure piston pushing gas through the 2σ throat — maintain a real density gradient across the narrow gap. The sub-chambers are physically isolated (atoms don't circulate between them) so each part shows its own local behaviour without geometry compromises.",
     build: fullHeatPump(),
   },
   {

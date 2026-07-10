@@ -219,36 +219,46 @@ export class CanvasRenderer {
     ctx.textBaseline = "middle";
     for (const p of parts) {
       // Pipe has no single anchor point, handle before the shared prelude.
+      // Rendered as a SOLID bold line + fat arrowhead + optional label —
+      // needs to read cleanly as "gas flows THIS WAY, from part A to part B",
+      // not as decorative dashes the eye ignores.
       if (p.kind === "pipe") {
         const x1 = sx(p.x1);
         const y1 = sy(p.y1);
         const x2 = sx(p.x2);
         const y2 = sy(p.y2);
         const col = p.colour ?? "#7a8393";
-        ctx.strokeStyle = col;
-        ctx.fillStyle = col;
-        ctx.lineWidth = 3;
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-        ctx.setLineDash([]);
         const dx = x2 - x1;
         const dy = y2 - y1;
         const len = Math.hypot(dx, dy);
-        if (len > 1) {
-          const ux = dx / len;
-          const uy = dy / len;
-          const head = 10;
-          const w = 6;
-          ctx.beginPath();
-          ctx.moveTo(x2, y2);
-          ctx.lineTo(x2 - ux * head + -uy * w, y2 - uy * head + ux * w);
-          ctx.lineTo(x2 - ux * head - -uy * w, y2 - uy * head - ux * w);
-          ctx.closePath();
-          ctx.fill();
-        }
+        if (len < 1) continue;
+        const ux = dx / len;
+        const uy = dy / len;
+        // Halo behind the line so it stands off the atom canvas.
+        ctx.strokeStyle = "rgba(11,13,18,0.85)";
+        ctx.lineWidth = 8;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2 - ux * 6, y2 - uy * 6);
+        ctx.stroke();
+        // Solid coloured shaft on top.
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2 - ux * 6, y2 - uy * 6);
+        ctx.stroke();
+        // Fat filled arrowhead.
+        ctx.fillStyle = col;
+        const head = 14;
+        const w = 9;
+        ctx.beginPath();
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - ux * head + -uy * w, y2 - uy * head + ux * w);
+        ctx.lineTo(x2 - ux * head - -uy * w, y2 - uy * head - ux * w);
+        ctx.closePath();
+        ctx.fill();
         if (p.label) drawTag(ctx, p.label, (x1 + x2) / 2, (y1 + y2) / 2, col);
         continue;
       }
