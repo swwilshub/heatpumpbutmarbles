@@ -561,32 +561,30 @@ function sandbox(): Scenario["build"] {
   };
 }
 
-// Full-heat-pump scenario, laid out as an EXPLODED SCHEMATIC: four
-// physically-isolated sub-chambers arranged as a heat-pump diagram, with
-// schematic pipe arrows between them.
+// Full-heat-pump scenario, now with REAL connected chambers and REAL
+// exterior reservoir atoms.
 //
-//   +--------+  discharge   +---------+
-//   | comp   |─────────────▶| cond    |
-//   |        |              |         |
-//   +--------+              +---------+
-//        ▲                        │ liquid
-//        │ suction                ▼
-//   +--------+              +---------+
-//   | evap   |◀─────────────| valve   |
-//   |        |              |         |
-//   +--------+              +---------+
+//   [comp]───discharge───▶[cond]═════ indoor "air marbles" (Langevin)
+//     ▲                     │
+//     │ suction             │ liquid
+//     │                     ▼
+//   [evap]◀══expansion══[valve]    ← 1σ throttle (Joule-Thomson)
+//     ║ outdoor "air marbles" (Langevin)
 //
-// Each sub-chamber has real physics for that stage of the cycle:
-//   - compressor: piston reciprocates → real work input W = ∫F·v dt
-//   - condenser: gas + heat-exchanger wall + Langevin thermostat at hot T
-//     → Q_hot = cumulative heat drained to the reservoir
-//   - valve: two zones divided by a wall with a narrow gap → gas passes
-//     through the gap and equilibrates the density gradient. Emergent
-//     Joule–Thomson-like effect on the low-P side.
-//   - evaporator: gas + heat-exchanger wall + Langevin thermostat at cold T
-//     → Q_cold = heat absorbed from the reservoir
-// The four sub-chambers don't share atoms — a closed-loop with atoms
-// circulating between them is a bigger geometry problem. The pipes are
+// Each chamber is connected to its neighbours by NARROW physical pipe
+// corridors (line-segment walls forming 2σ channels) so atoms actually
+// flow between them. The compressor piston pushes gas out through the
+// discharge pipe; pressure gradients drive circulation the rest of the way
+// around. The expansion pipe is narrower (~1σ) — that IS the throttle.
+//
+// The indoor / outdoor reservoirs are populated with actual air-marble
+// atoms (LJ, kind=0) held at their setpoint by a Langevin thermostat.
+// They collide with the tethered coil-wall atoms — heat transfers by
+// real collisions, not a mathematical thermostat on the wall itself.
+// When the fan is turned down (γ ↓) the boundary layer of air-marbles
+// against the coil stagnates and can't dump heat quickly — same failure
+// mode as a real coil losing airflow.
+//
 // schematic (dashed arrows drawn on the canvas) so users read the whole
 // canvas as a diagram, and the local physics inside each box is honest.
 function fullHeatPump(): Scenario["build"] {
@@ -597,150 +595,200 @@ function fullHeatPump(): Scenario["build"] {
       return anchors.t1_star + m * (c - anchors.t1_celsius);
     };
     const state = {
-      pistonSpeed: 0.4,
-      condFan: 1.5,
-      evapFan: 1.5,
-      hotResC: 45,
+      pistonSpeed: 0.25,
+      condFan: 2.0,
+      evapFan: 2.0,
+      hotResC: 40,
       coldResC: -5,
     };
     // Domain covers all four sub-chambers plus reservoir tint strips and
     // pipe drawing space.
     const sim = new Simulation({
-      domain: { xMin: -3, yMin: -3, xMax: 63, yMax: 37 },
+      domain: { xMin: -6, yMin: -4, xMax: 66, yMax: 38 },
       potential: { kind: "lj", epsilon: 1, sigma: 1, rCut: 2.5 },
       segments: [],
       dt: 0.004,
-      capacity: 1500,
+      capacity: 2000,
     });
     sim.setRng(new Rng(21));
 
     const segs: LineSegment[] = [];
-    const addWalls = (x0: number, y0: number, x1: number, y1: number) => {
-      segs.push({ ax: x0, ay: y0, bx: x1, by: y0, epsilon: 1, sigma: 1 });
-      segs.push({ ax: x1, ay: y0, bx: x1, by: y1, epsilon: 1, sigma: 1 });
-      segs.push({ ax: x1, ay: y1, bx: x0, by: y1, epsilon: 1, sigma: 1 });
-      segs.push({ ax: x0, ay: y1, bx: x0, by: y0, epsilon: 1, sigma: 1 });
-    };
-    const addWallsExceptOne = (
-      x0: number, y0: number, x1: number, y1: number,
-      skip: "left" | "right" | "top" | "bottom"
-    ) => {
-      if (skip !== "bottom") segs.push({ ax: x0, ay: y0, bx: x1, by: y0, epsilon: 1, sigma: 1 });
-      if (skip !== "right") segs.push({ ax: x1, ay: y0, bx: x1, by: y1, epsilon: 1, sigma: 1 });
-      if (skip !== "top") segs.push({ ax: x1, ay: y1, bx: x0, by: y1, epsilon: 1, sigma: 1 });
-      if (skip !== "left") segs.push({ ax: x0, ay: y1, bx: x0, by: y0, epsilon: 1, sigma: 1 });
-    };
+    const w = (ax: number, ay: number, bx: number, by: number) =>
+      segs.push({ ax, ay, bx, by, epsilon: 1, sigma: 1 });
 
-    // Sub-chamber bounds
+    // Chamber bounds (4-quadrant layout)
+    //   Comp (top-left)   Cond (top-right)
+    //   Evap (bot-left)   Valve (bot-right)
+    // Flow: comp → discharge (right) → cond → liquid (down) → valve
+    //     → expansion (left) → evap → suction (up) → comp
     const compX0 = 2, compY0 = 20, compX1 = 24, compY1 = 32;
     const condX0 = 36, condY0 = 20, condX1 = 58, condY1 = 32;
     const valveX0 = 36, valveY0 = 2, valveX1 = 58, valveY1 = 14;
     const evapX0 = 2, evapY0 = 2, evapX1 = 24, evapY1 = 14;
+    // Pipe corridor centres/widths
+    const dischargeY = 26, dischargeHW = 1.0;     // 2σ wide horizontal pipe
+    const liquidX = 47, liquidHW = 1.0;            // 2σ wide vertical pipe
+    const suctionX = 13, suctionHW = 1.0;          // 2σ wide vertical pipe
+    const expansionY = 8, expansionHW = 0.8;       // 1.6σ NARROW pipe — the Joule-Thomson throttle
 
-    // === Compressor chamber: piston reciprocating ==========================
-    addWalls(compX0, compY0, compX1, compY1);
-    const compGasIdx: number[] = [];
-    const compFirst = sim.n;
+    // === Compressor chamber walls ==========================================
+    // Full box except the right wall has a gap for the discharge pipe, and
+    // the bottom wall has a gap for the suction pipe.
+    w(compX0, compY0, suctionX - suctionHW, compY0);        // bottom (left of suction gap)
+    w(suctionX + suctionHW, compY0, compX1, compY0);        // bottom (right of suction gap)
+    w(compX1, compY0, compX1, dischargeY - dischargeHW);    // right (below discharge gap)
+    w(compX1, dischargeY + dischargeHW, compX1, compY1);    // right (above discharge gap)
+    w(compX1, compY1, compX0, compY1);                       // top
+    w(compX0, compY1, compX0, compY0);                       // left
+
+    // === Condenser chamber walls ===========================================
+    // Left has discharge gap; bottom has liquid gap; right is heat exchanger.
+    w(condX0, condY0, liquidX - liquidHW, condY0);           // bottom (left of liquid gap)
+    w(liquidX + liquidHW, condY0, condX1, condY0);           // bottom (right of liquid gap)
+    // right wall replaced by exchanger
+    w(condX1, condY1, condX0, condY1);                       // top
+    w(condX0, condY1, condX0, dischargeY + dischargeHW);     // left (above discharge gap)
+    w(condX0, dischargeY - dischargeHW, condX0, condY0);     // left (below discharge gap)
+
+    // === Valve chamber walls ===============================================
+    // Top has liquid gap; left has NARROW expansion gap.
+    w(valveX0, valveY0, valveX1, valveY0);                    // bottom
+    w(valveX1, valveY0, valveX1, valveY1);                    // right
+    w(valveX1, valveY1, liquidX + liquidHW, valveY1);         // top (right of liquid gap)
+    w(liquidX - liquidHW, valveY1, valveX0, valveY1);         // top (left of liquid gap)
+    w(valveX0, valveY1, valveX0, expansionY + expansionHW);   // left (above expansion gap)
+    w(valveX0, expansionY - expansionHW, valveX0, valveY0);   // left (below expansion gap)
+
+    // === Evaporator chamber walls ==========================================
+    // Top has suction gap; right has NARROW expansion gap; left is exchanger.
+    w(evapX1, evapY0, evapX0, evapY0);                         // bottom
+    w(evapX1, expansionY - expansionHW, evapX1, evapY0);       // right (below expansion gap)
+    w(evapX1, evapY1, evapX1, expansionY + expansionHW);       // right (above expansion gap)
+    w(suctionX + suctionHW, evapY1, evapX1, evapY1);           // top (right of suction gap)
+    w(evapX0, evapY1, suctionX - suctionHW, evapY1);           // top (left of suction gap)
+    // left wall replaced by exchanger
+
+    // === Pipe corridor walls (physical narrow channels) ====================
+    // Discharge pipe (comp → cond, horizontal, 2σ)
+    w(compX1, dischargeY + dischargeHW, condX0, dischargeY + dischargeHW);  // top
+    w(compX1, dischargeY - dischargeHW, condX0, dischargeY - dischargeHW);  // bottom
+    // Liquid pipe (cond → valve, vertical, 2σ)
+    w(liquidX - liquidHW, condY0, liquidX - liquidHW, valveY1);             // left
+    w(liquidX + liquidHW, condY0, liquidX + liquidHW, valveY1);             // right
+    // Expansion pipe (valve → evap, horizontal, NARROW 1.2σ) — the Joule-Thomson throttle
+    w(valveX0, expansionY + expansionHW, evapX1, expansionY + expansionHW); // top
+    w(valveX0, expansionY - expansionHW, evapX1, expansionY - expansionHW); // bottom
+    // Suction pipe (evap → comp, vertical, 2σ)
+    w(suctionX - suctionHW, evapY1, suctionX - suctionHW, compY0);          // left
+    w(suctionX + suctionHW, evapY1, suctionX + suctionHW, compY0);          // right
+
+    // === Outer walls for the two exterior reservoirs =======================
+    // Indoor reservoir (right of condenser)
+    const indoorX0 = condX1, indoorX1 = 62;
+    const indoorY0 = condY0, indoorY1 = condY1;
+    w(indoorX1, indoorY0, indoorX1, indoorY1);                              // right outer
+    w(indoorX1, indoorY0, indoorX0, indoorY0);                              // bottom outer
+    w(indoorX0, indoorY1, indoorX1, indoorY1);                              // top outer
+    // Outdoor reservoir (left of evaporator)
+    const outdoorX0 = -4, outdoorX1 = evapX0;
+    const outdoorY0 = evapY0, outdoorY1 = evapY1;
+    w(outdoorX0, outdoorY0, outdoorX0, outdoorY1);                          // left outer
+    w(outdoorX0, outdoorY0, outdoorX1, outdoorY0);                          // bottom outer
+    w(outdoorX1, outdoorY1, outdoorX0, outdoorY1);                          // top outer
+
+    // === Seed refrigerant (one connected system across all 4 chambers) =====
+    // Denser seed on the "high-P" side (comp+cond+valve) than on the "low-P"
+    // side (evap) so a pressure gradient is present from t=0 — the
+    // compressor doesn't have to build it up from scratch.
+    const refIdx: number[] = [];
+    const addToRef = (start: number) => {
+      for (let i = start; i < sim.n; i++) refIdx.push(i);
+    };
+    // Compressor chamber
+    let first = sim.n;
     seedLattice(sim, {
       xMin: compX0 + 1.5, yMin: compY0 + 1,
-      xMax: compX0 + 14, yMax: compY1 - 1,
-    }, 1.25, 1.0, new Rng(101));
-    for (let i = compFirst; i < sim.n; i++) compGasIdx.push(i);
-    const piston = new MovingSegment({
-      ax: compX1 - 4, ay: compY0, bx: compX1 - 4, by: compY1,
-      vax: 0, vay: 0, vbx: 0, vby: 0,
-      epsilon: 1, sigma: 1.2,
-    });
-    sim.movingSegments.push(piston);
-    const PISTON_LEFT = compX0 + 7;
-    const PISTON_RIGHT = compX1 - 4;
-
-    // === Condenser chamber: hot exchanger + hot reservoir on the right =====
-    addWallsExceptOne(condX0, condY0, condX1, condY1, "right");
-    const condGasIdx: number[] = [];
-    const condFirst = sim.n;
+      xMax: compX1 - 5, yMax: compY1 - 1,
+    }, 1.35, 1.0, new Rng(101));
+    addToRef(first);
+    // Condenser chamber (moderately dense — post-compression)
+    first = sim.n;
     seedLattice(sim, {
       xMin: condX0 + 1, yMin: condY0 + 1,
       xMax: condX1 - 2, yMax: condY1 - 1,
-    }, 1.25, 1.0, new Rng(202));
-    for (let i = condFirst; i < sim.n; i++) condGasIdx.push(i);
+    }, 1.4, 1.0, new Rng(202));
+    addToRef(first);
+    // Valve chamber (moderately dense — high-P side)
+    first = sim.n;
+    seedLattice(sim, {
+      xMin: valveX0 + 1, yMin: valveY0 + 1,
+      xMax: valveX1 - 1, yMax: valveY1 - 1,
+    }, 1.4, 1.0, new Rng(303));
+    addToRef(first);
+    // Evaporator chamber (sparse — post-expansion low-P)
+    first = sim.n;
+    seedLattice(sim, {
+      xMin: evapX0 + 2, yMin: evapY0 + 1,
+      xMax: evapX1 - 1, yMax: evapY1 - 1,
+    }, 1.7, 1.0, new Rng(404));
+    addToRef(first);
+
+    // === Heat exchangers (tethered coil atoms) =============================
     const condHx = addHeatExchanger(sim, {
       ax: condX1, ay: condY0 + 0.5, bx: condX1, by: condY1 - 0.5,
       spacing: 1.15, layers: 2, layerOffset: 1.0,
       tetherK: 40, sigma: 1, epsilon: 1,
     });
     segs.push(condHx.barrier);
-    const condTherm = new ThermostatGroup(condHx.atomIndices, cToT(state.hotResC), state.condFan);
-    sim.thermostats.push(condTherm);
-
-    // === Valve chamber: two zones divided by a narrow-gap wall =============
-    addWalls(valveX0, valveY0, valveX1, valveY1);
-    // Internal wall dividing valve into left (high-P) and right (low-P) zones,
-    // with a narrow gap in the middle for atoms to slowly leak through.
-    const valveMidX = (valveX0 + valveX1) / 2;
-    const gapCentre = (valveY0 + valveY1) / 2;
-    const gapHalf = 1.0;
-    segs.push({
-      ax: valveMidX, ay: valveY0 + 0.5, bx: valveMidX, by: gapCentre - gapHalf,
-      epsilon: 1, sigma: 1,
-    });
-    segs.push({
-      ax: valveMidX, ay: gapCentre + gapHalf, bx: valveMidX, by: valveY1 - 0.5,
-      epsilon: 1, sigma: 1,
-    });
-    const valveHighIdx: number[] = [];
-    const valveLowIdx: number[] = [];
-    // High-pressure side (left) — dense fill.
-    const valveHighFirst = sim.n;
-    seedLattice(sim, {
-      xMin: valveX0 + 2, yMin: valveY0 + 1,
-      xMax: valveMidX - 1, yMax: valveY1 - 1,
-    }, 1.05, 1.0, new Rng(303));
-    for (let i = valveHighFirst; i < sim.n; i++) valveHighIdx.push(i);
-    // Low-pressure side (right) — sparse fill.
-    const valveLowFirst = sim.n;
-    seedLattice(sim, {
-      xMin: valveMidX + 1, yMin: valveY0 + 1,
-      xMax: valveX1 - 1, yMax: valveY1 - 1,
-    }, 1.8, 1.0, new Rng(304));
-    for (let i = valveLowFirst; i < sim.n; i++) valveLowIdx.push(i);
-
-    // Valve driver piston — a vertical segment on the far LEFT of the valve
-    // chamber that slowly moves right, pushing high-P atoms through the gap.
-    // Without this the density gradient just decays to equilibrium (there's
-    // no upstream pressure source in an exploded schematic); with it the
-    // valve stays actively pressurised, atoms squeeze through the throat,
-    // and the density gradient persists as a real emergent property.
-    const VALVE_PUSH_LEFT = valveX0 + 1;
-    const VALVE_PUSH_RIGHT = valveMidX - 3;
-    const valvePiston = new MovingSegment({
-      ax: VALVE_PUSH_LEFT, ay: valveY0,
-      bx: VALVE_PUSH_LEFT, by: valveY1,
-      vax: 0, vay: 0, vbx: 0, vby: 0,
-      epsilon: 1, sigma: 1.2,
-    });
-    sim.movingSegments.push(valvePiston);
-    const VALVE_PUSH_SPEED = 0.06;      // slow — pressure driver, not a hammer
-    const VALVE_RETURN_FACTOR = 8;      // fast retract, invisible
-    let valvePhase: "push" | "return" = "push";
-
-    // === Evaporator chamber: cold exchanger + cold reservoir on the left ===
-    addWallsExceptOne(evapX0, evapY0, evapX1, evapY1, "left");
-    const evapGasIdx: number[] = [];
-    const evapFirst = sim.n;
-    seedLattice(sim, {
-      xMin: evapX0 + 2, yMin: evapY0 + 1,
-      xMax: evapX1 - 1, yMax: evapY1 - 1,
-    }, 1.4, 1.0, new Rng(404));
-    for (let i = evapFirst; i < sim.n; i++) evapGasIdx.push(i);
     const evapHx = addHeatExchanger(sim, {
       ax: evapX0, ay: evapY0 + 0.5, bx: evapX0, by: evapY1 - 0.5,
       spacing: 1.15, layers: 2, layerOffset: 1.0,
       tetherK: 40, sigma: 1, epsilon: 1,
     });
     segs.push(evapHx.barrier);
-    const evapTherm = new ThermostatGroup(evapHx.atomIndices, cToT(state.coldResC), state.evapFan);
+
+    // === Exterior reservoir atoms (indoor & outdoor "air marbles") =========
+    // These are REAL free atoms in the reservoir regions, not just Langevin
+    // on the coil wall. They collide with the coil-wall atoms and carry heat
+    // in/out of the system by physical collisions. Langevin is applied ONLY
+    // to these reservoir atoms — that's what the fan represents. Fan off →
+    // Langevin γ ↓ → boundary layer against the coil can't be refreshed →
+    // stagnation → same failure mode as a real coil losing airflow.
+    const indoorIdx: number[] = [];
+    first = sim.n;
+    seedLattice(sim, {
+      xMin: indoorX0 + 1.0, yMin: indoorY0 + 0.6,
+      xMax: indoorX1 - 0.5, yMax: indoorY1 - 0.6,
+    }, 1.4, 1.0, new Rng(505));
+    for (let i = first; i < sim.n; i++) indoorIdx.push(i);
+    const outdoorIdx: number[] = [];
+    first = sim.n;
+    seedLattice(sim, {
+      xMin: outdoorX0 + 0.5, yMin: outdoorY0 + 0.6,
+      xMax: outdoorX1 - 1.0, yMax: outdoorY1 - 0.6,
+    }, 1.4, 1.0, new Rng(606));
+    for (let i = first; i < sim.n; i++) outdoorIdx.push(i);
+    const condTherm = new ThermostatGroup(indoorIdx, cToT(state.hotResC), state.condFan);
+    const evapTherm = new ThermostatGroup(outdoorIdx, cToT(state.coldResC), state.evapFan);
+    sim.thermostats.push(condTherm);
     sim.thermostats.push(evapTherm);
+
+    // === Compressor piston =================================================
+    // Sits inside the compressor chamber, to the RIGHT of the suction gap.
+    // Active rightward stroke drives gas out through discharge; fast ghost
+    // return-stroke slides left through the empty compression zone without
+    // sucking atoms back. Piston travel keeps entirely right of the suction
+    // gap so the suction port isn't briefly sealed each cycle.
+    const PISTON_LEFT = suctionX + suctionHW + 1.5;
+    const PISTON_RIGHT = compX1 - 3;
+    const PISTON_RETURN_FACTOR = 6;
+    const piston = new MovingSegment({
+      ax: PISTON_LEFT, ay: compY0, bx: PISTON_LEFT, by: compY1,
+      vax: 0, vay: 0, vbx: 0, vby: 0,
+      epsilon: 1, sigma: 1.2,
+    });
+    sim.movingSegments.push(piston);
+    let pistonPhase: "push" | "return" = "push";
 
     sim.setSegments(segs);
     sim.primeForces();
@@ -749,46 +797,39 @@ function fullHeatPump(): Scenario["build"] {
     let started = false;
     const tick = (step: number) => {
       if (step < 200 && step % 25 === 0 && step > 0) {
-        rescaleToTemperature(sim, 1.0, compGasIdx);
-        rescaleToTemperature(sim, 1.0, condGasIdx);
-        rescaleToTemperature(sim, 1.0, evapGasIdx);
+        rescaleToTemperature(sim, 1.0, refIdx);
+        rescaleToTemperature(sim, 1.0, indoorIdx);
+        rescaleToTemperature(sim, 1.0, outdoorIdx);
       }
       if (!started && step >= 200) {
         started = true;
-        piston.vax = -state.pistonSpeed;
-        piston.vbx = -state.pistonSpeed;
+        piston.active = true;
+        piston.vax = state.pistonSpeed;
+        piston.vbx = state.pistonSpeed;
         piston.workInput = 0;
+        piston.workAbsolute = 0;
         condTherm.energyIn = 0; condTherm.energyOut = 0;
         evapTherm.energyIn = 0; evapTherm.energyOut = 0;
-        // Kick the valve piston into its push stroke too.
-        valvePiston.active = true;
-        valvePiston.vax = VALVE_PUSH_SPEED;
-        valvePiston.vbx = VALVE_PUSH_SPEED;
       }
       if (started) {
-        // Compressor bounce
-        if (piston.ax < PISTON_LEFT && piston.vax < 0) {
-          piston.vax = state.pistonSpeed; piston.vbx = state.pistonSpeed;
-        } else if (piston.ax > PISTON_RIGHT && piston.vax > 0) {
-          piston.vax = -state.pistonSpeed; piston.vbx = -state.pistonSpeed;
-        }
-        // Valve piston cycle — slow active push right, fast ghost return.
-        // Keeps the high-side pressurised so gas keeps squeezing through
-        // the throat instead of the whole chamber equilibrating.
-        if (valvePhase === "push") {
-          if (valvePiston.ax >= VALVE_PUSH_RIGHT) {
-            valvePhase = "return";
-            valvePiston.active = false;
-            valvePiston.vax = -VALVE_PUSH_SPEED * VALVE_RETURN_FACTOR;
-            valvePiston.vbx = -VALVE_PUSH_SPEED * VALVE_RETURN_FACTOR;
+        // One-way pumping cycle. Active rightward stroke pushes gas out the
+        // discharge pipe; fast ghost return-stroke slides back without
+        // grabbing anything. clearContactZone() prevents an r⁻¹³ spike
+        // the moment we reactivate atop atoms that have drifted in.
+        if (pistonPhase === "push") {
+          if (piston.ax >= PISTON_RIGHT) {
+            pistonPhase = "return";
+            piston.active = false;
+            piston.vax = -state.pistonSpeed * PISTON_RETURN_FACTOR;
+            piston.vbx = -state.pistonSpeed * PISTON_RETURN_FACTOR;
           }
         } else {
-          if (valvePiston.ax <= VALVE_PUSH_LEFT) {
-            valvePhase = "push";
-            valvePiston.clearContactZone(sim);
-            valvePiston.active = true;
-            valvePiston.vax = VALVE_PUSH_SPEED;
-            valvePiston.vbx = VALVE_PUSH_SPEED;
+          if (piston.ax <= PISTON_LEFT) {
+            pistonPhase = "push";
+            piston.clearContactZone(sim);
+            piston.active = true;
+            piston.vax = state.pistonSpeed;
+            piston.vbx = state.pistonSpeed;
           }
         }
       }
@@ -801,39 +842,23 @@ function fullHeatPump(): Scenario["build"] {
       cMin: -30,
       cMax: 120,
       regions: [
-        // Reservoir tints — hot on the right of the condenser, cold on the
-        // left of the evaporator. Labels below as schematics.
+        // Reservoir tints — indoor (hot) right of condenser, outdoor (cold) left of evap.
         {
           label: "",
-          xMin: condX1, yMin: condY0, xMax: 61, yMax: condY1,
+          xMin: indoorX0, yMin: indoorY0, xMax: indoorX1, yMax: indoorY1,
           tint: "rgba(210,80,90,0.14)",
         },
         {
           label: "",
-          xMin: -2, yMin: evapY0, xMax: evapX0, yMax: evapY1,
+          xMin: outdoorX0, yMin: outdoorY0, xMax: outdoorX1, yMax: outdoorY1,
           tint: "rgba(70,130,180,0.16)",
-        },
-        // Temperature-value regions per sub-chamber gas
-        {
-          label: "gas",
-          xMin: compX0 + 1, yMin: compY0 + 1,
-          xMax: compX0 + 5, yMax: compY0 + 3,
-          v: T(() => sim.temperatureOf(compGasIdx)),
-        },
-        {
-          label: "gas",
-          xMin: condX0 + 1, yMin: condY0 + 1,
-          xMax: condX0 + 5, yMax: condY0 + 3,
-          v: T(() => sim.temperatureOf(condGasIdx)),
-        },
-        {
-          label: "gas",
-          xMin: evapX0 + 1, yMin: evapY0 + 1,
-          xMax: evapX0 + 5, yMax: evapY0 + 3,
-          v: T(() => sim.temperatureOf(evapGasIdx)),
         },
       ],
       readouts: [
+        {
+          label: "refrigerant T",
+          v: T(() => sim.temperatureOf(refIdx)),
+        },
         {
           label: "hot coil (indoors)",
           v: T(() => sim.temperatureOf(condHx.atomIndices)),
@@ -843,39 +868,44 @@ function fullHeatPump(): Scenario["build"] {
           v: T(() => sim.temperatureOf(evapHx.atomIndices)),
         },
         {
-          label: "electricity used",
-          v: R(() => (started ? piston.workInput.toFixed(1) : "—")),
+          label: "indoor air T",
+          v: T(() => sim.temperatureOf(indoorIdx)),
         },
-        // In an EXPLODED schematic the sub-chambers are isolated so these Q
-        // numbers reflect each thermostat's local heat exchange, not the
-        // coupled Q_hot/Q_cold of a closed refrigeration loop. Labelled
-        // accordingly so users don't try to compute COP off them.
         {
-          label: "heat exchanged, condenser",
+          label: "outdoor air T",
+          v: T(() => sim.temperatureOf(outdoorIdx)),
+        },
+        {
+          label: "electricity used",
+          v: R(() => (started ? piston.workAbsolute.toFixed(1) : "—")),
+        },
+        {
+          label: "heat delivered indoors",
           v: R(() =>
             started ? (condTherm.energyOut - condTherm.energyIn).toFixed(1) : "—"
           ),
         },
         {
-          label: "heat exchanged, evaporator",
+          label: "heat pulled from outdoors",
           v: R(() =>
             started ? (evapTherm.energyIn - evapTherm.energyOut).toFixed(1) : "—"
           ),
         },
         {
-          label: "high-pressure density",
-          v: R(() => (valveHighIdx.length / ((valveMidX - valveX0 - 1) * (valveY1 - valveY0 - 2))).toFixed(2)),
-        },
-        {
-          label: "low-pressure density",
-          v: R(() => (valveLowIdx.length / ((valveX1 - valveMidX - 1) * (valveY1 - valveY0 - 2))).toFixed(2)),
+          label: "efficiency (COP)",
+          v: R(() => {
+            if (!started || piston.workAbsolute <= 0) return "—";
+            const q = condTherm.energyOut - condTherm.energyIn;
+            return (q / piston.workAbsolute).toFixed(2);
+          }),
         },
       ],
       series: [
-        { name: "compressor gas", colour: "#f0c060", value: () => sim.temperatureOf(compGasIdx) },
+        { name: "refrigerant", colour: "#f0c060", value: () => sim.temperatureOf(refIdx) },
         { name: "hot coil", colour: "#e07a5f", value: () => sim.temperatureOf(condHx.atomIndices) },
         { name: "cold coil", colour: "#5f8fb8", value: () => sim.temperatureOf(evapHx.atomIndices) },
-        { name: "evaporator gas", colour: "#7091b8", value: () => sim.temperatureOf(evapGasIdx) },
+        { name: "indoor air", colour: "rgba(224,122,95,0.5)", value: () => sim.temperatureOf(indoorIdx) },
+        { name: "outdoor air", colour: "rgba(95,143,184,0.5)", value: () => sim.temperatureOf(outdoorIdx) },
       ],
       sliders: [
         {
@@ -920,28 +950,33 @@ function fullHeatPump(): Scenario["build"] {
         },
       ],
       parts: [
-        // Sub-chamber labels
-        { kind: "label", x: compX0 + 11, y: compY1 + 1.2, label: "compressor" },
-        { kind: "label", x: condX0 + 11, y: condY1 + 1.2, label: "condenser" },
-        { kind: "label", x: valveX0 + 11, y: valveY0 - 1.2, label: "expansion valve" },
-        { kind: "label", x: evapX0 + 11, y: evapY0 - 1.2, label: "evaporator" },
+        // Sub-chamber labels — pipes are physically visible as walls now, so
+        // just tag each part with a name. No arrows overlay needed.
+        { kind: "label", x: (compX0 + compX1) / 2, y: compY1 + 1.2, label: "compressor" },
+        { kind: "label", x: (condX0 + condX1) / 2, y: condY1 + 1.2, label: "condenser" },
+        { kind: "label", x: (valveX0 + valveX1) / 2, y: valveY0 - 1.2, label: "valve chamber" },
+        { kind: "label", x: (evapX0 + evapX1) / 2, y: evapY0 - 1.2, label: "evaporator" },
+        // Pipe stage labels — placed on the walls themselves
+        { kind: "label", x: (compX1 + condX0) / 2, y: dischargeY + dischargeHW + 1.2, label: "discharge" },
+        { kind: "label", x: liquidX + liquidHW + 2.8, y: (condY0 + valveY1) / 2, label: "liquid line" },
+        { kind: "label", x: (evapX1 + valveX0) / 2, y: expansionY - expansionHW - 1.2, label: "expansion (throttle)" },
+        { kind: "label", x: suctionX - suctionHW - 2.4, y: (evapY1 + compY0) / 2, label: "suction" },
         // Coil labels
         { kind: "coil", x: condX1 - 1, y: condY1 - 0.6, label: "coil" },
         { kind: "coil", x: evapX0 + 1, y: evapY1 - 0.6, label: "coil" },
-        // Reservoir labels & fans
-        { kind: "label", x: 60, y: condY0 + 0.8, label: "indoor" },
-        { kind: "label", x: -1, y: evapY0 + 0.8, label: "outdoor" },
+        // Reservoir labels
+        { kind: "label", x: (indoorX0 + indoorX1) / 2, y: indoorY1 + 1.2, label: "indoor air" },
+        { kind: "label", x: (outdoorX0 + outdoorX1) / 2, y: outdoorY1 + 1.2, label: "outdoor air" },
+        // Fans over the reservoirs (γ)
         {
           kind: "fan",
-          x: 60, y: (condY0 + condY1) / 2,
+          x: (indoorX0 + indoorX1) / 2, y: (indoorY0 + indoorY1) / 2,
           strength: () => state.condFan,
-          label: "fan",
         },
         {
           kind: "fan",
-          x: -1, y: (evapY0 + evapY1) / 2,
+          x: (outdoorX0 + outdoorX1) / 2, y: (outdoorY0 + outdoorY1) / 2,
           strength: () => state.evapFan,
-          label: "fan",
         },
         // Compressor arrow anchored above the piston travel range
         {
@@ -949,38 +984,6 @@ function fullHeatPump(): Scenario["build"] {
           x: (PISTON_LEFT + PISTON_RIGHT) / 2,
           y: compY1 + 0.4,
           label: "piston",
-        },
-        // Schematic pipes between sub-chambers. These are visual only —
-        // atoms don't actually flow through them. The colour hints at the
-        // refrigerant state at that stage (hot vapour, hot liquid, cold
-        // mix, cold vapour).
-        {
-          kind: "pipe",
-          x1: compX1 + 0.5, y1: (compY0 + compY1) / 2 + 2,
-          x2: condX0 - 0.5, y2: (condY0 + condY1) / 2 + 2,
-          label: "discharge (hot vapour)",
-          colour: "#e07a5f",
-        },
-        {
-          kind: "pipe",
-          x1: (condX0 + condX1) / 2 + 3, y1: condY0 - 0.5,
-          x2: (valveX0 + valveX1) / 2 + 3, y2: valveY1 + 0.5,
-          label: "liquid",
-          colour: "#c47f5f",
-        },
-        {
-          kind: "pipe",
-          x1: valveX0 - 0.5, y1: (valveY0 + valveY1) / 2 - 2,
-          x2: evapX1 + 0.5, y2: (evapY0 + evapY1) / 2 - 2,
-          label: "expansion (cold mix)",
-          colour: "#7091b8",
-        },
-        {
-          kind: "pipe",
-          x1: (evapX0 + evapX1) / 2 - 3, y1: evapY1 + 0.5,
-          x2: (compX0 + compX1) / 2 - 3, y2: compY0 - 0.5,
-          label: "suction (cool vapour)",
-          colour: "#5f8fb8",
         },
       ],
     };
@@ -1350,8 +1353,8 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: "full_heat_pump",
-    name: "full heat pump — schematic layout",
-    blurb: "All four heat-pump stages laid out as a diagram — compressor, condenser, expansion valve, evaporator — each a separate chamber with its own real physics. Bold coloured arrows show the schematic flow (hot vapour → liquid → cold mix → cool vapour → back). Coloured by temperature: watch the condenser gas glow yellow against a hot indoor coil, the evaporator gas sit deep blue against a cold outdoor coil, and the valve — with its own upstream pressure piston pushing gas through the 2σ throat — maintain a real density gradient across the narrow gap. The sub-chambers are physically isolated (atoms don't circulate between them) so each part shows its own local behaviour without geometry compromises.",
+    name: "full heat pump — real connected loop",
+    blurb: "All four heat-pump stages connected by real narrow pipes atoms actually flow through. Compressor's one-way active-stroke piston drives gas out the discharge line, around through the condenser (where it dumps heat to the indoor air marbles), down the liquid line, through the NARROW ~1σ expansion throat (real Joule-Thomson cooling), into the evaporator (absorbing heat from outdoor air marbles), and back via the suction line. Fans control Langevin coupling on the indoor and outdoor air marbles — turn a fan down and the air layer against its coil stagnates, exactly as a real coil starves when airflow drops.",
     build: fullHeatPump(),
   },
   {
