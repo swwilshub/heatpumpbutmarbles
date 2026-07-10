@@ -7,6 +7,28 @@ import {
   paletteSamplesCelsius,
 } from "./palette";
 
+// Small badge for schematic labels — dark rounded rect + coloured text.
+function drawTag(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  cx: number,
+  cy: number,
+  colour: string
+): void {
+  ctx.font = "600 11px system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  const w = ctx.measureText(text).width + 10;
+  ctx.fillStyle = "rgba(11,13,18,0.82)";
+  ctx.fillRect(cx - w / 2, cy - 8, w, 16);
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx - w / 2 + 0.5, cy - 8 + 0.5, w - 1, 15);
+  ctx.fillStyle = colour;
+  ctx.fillText(text, cx, cy);
+  ctx.textAlign = "left";
+}
+
 // 2D canvas rendering. Instanced-quad WebGL2 is the M5 upgrade — plain
 // canvas gets us through M1–M4 at 2k atoms comfortably.
 
@@ -22,13 +44,26 @@ export interface RegionOverlay {
   tint?: string;
 }
 
+// Schematic annotations drawn on the canvas so users can see which parts
+// they're tuning. Each is a small drawing anchored at a world coordinate.
+//   - "compressor": arrow + text at position; caller anchors near the piston
+//   - "coil"      : label + underline at position; caller anchors near wall atoms
+//   - "fan"       : four arrows pointing INTO the coil, size ∝ strength().
+//                   Fan strength = 0 → tiny arrows (natural convection).
+//                   Fan strength ≥ 4 → big bold arrows (forced-air max).
+//   - "label"     : plain text at position.
+export type PartSchematic =
+  | { kind: "compressor"; x: number; y: number; label: string }
+  | { kind: "coil"; x: number; y: number; label: string }
+  | { kind: "fan"; x: number; y: number; strength: () => number; label?: string }
+  | { kind: "label"; x: number; y: number; label: string };
+
 export interface RenderOptions {
   atomRadius: number;
   anchors?: UnitAnchors;
   regions?: readonly RegionOverlay[];
+  parts?: readonly PartSchematic[];
   drawLegend?: boolean;
-  // Optional palette window in °C. If omitted, the renderer uses
-  // DEFAULT_LEGEND_C_MIN..DEFAULT_LEGEND_C_MAX.
   cMin?: number;
   cMax?: number;
 }
@@ -105,25 +140,20 @@ export class CanvasRenderer {
       ctx.stroke();
     }
 
-    // Atoms — colour by mapping each atom's instantaneous KE-based T*
-    // through the °C anchor mapping. "Instantaneous T" for a single atom is
-    // v² (since ½ m v² = T for a 2-DOF system with m=1); the °C map is
-    // linear so this survives without extra normalization.
+    // Atoms — colour by each atom's TIME-AVERAGED v² (the exponentially
+    // smoothed value the sim maintains). Instantaneous v² is exponentially
+    // distributed (σ = mean), so a plain v² colouring makes every 20th atom
+    // look "hot" even in a uniform-temperature gas. Smoothed v² is what
+    // people mean when they say "this atom's temperature" — it's the local
+    // kinetic energy averaged over enough collision events to be a
+    // meaningful sample of the local Maxwell-Boltzmann distribution.
     const r = opts.atomRadius * scale;
     const posX = sim.posX;
     const posY = sim.posY;
-    const velX = sim.velX;
-    const velY = sim.velY;
+    const smoothedV2 = sim.smoothedV2;
     const kind = sim.kind;
     for (let i = 0; i < sim.n; i++) {
-      const vx = velX[i]!;
-      const vy = velY[i]!;
-      // Note: per-atom "T*" from |v|² has huge fluctuations (it's a single
-      // draw from an exponential distribution when the atom is at
-      // equilibrium). To keep the eye from being dazzled we soften with a
-      // sqrt on the KE contribution around the local mean — but we keep
-      // it monotonic, so a hot atom still reads hot.
-      const tStar = vx * vx + vy * vy;
+      const tStar = smoothedV2[i]!;
       const c = starToCelsius(tStar, anchors);
       ctx.fillStyle = celsiusColor(c);
       ctx.beginPath();
@@ -140,6 +170,7 @@ export class CanvasRenderer {
       ctx.font = "600 12px system-ui, sans-serif";
       ctx.textBaseline = "top";
       for (const r of opts.regions) {
+        if (!r.label && !r.value) continue; // tint-only regions render no label
         const x0 = sx(r.xMin);
         const y0 = sy(r.yMax);
         const text = r.value ? `${r.label}: ${r.value()}` : r.label;
@@ -151,11 +182,98 @@ export class CanvasRenderer {
       }
     }
 
+    if (opts.parts) {
+      this.drawParts(ctx, opts.parts, sx, sy, scale);
+    }
+
     if (opts.drawLegend) {
       const cMin = opts.cMin ?? DEFAULT_LEGEND_C_MIN;
       const cMax = opts.cMax ?? DEFAULT_LEGEND_C_MAX;
       this.drawCelsiusLegend(ctx, width, height - legendH, legendH, cMin, cMax);
     }
+  }
+
+  private drawParts(
+    ctx: CanvasRenderingContext2D,
+    parts: readonly PartSchematic[],
+    sx: (x: number) => number,
+    sy: (y: number) => number,
+    scale: number
+  ): void {
+    ctx.font = "600 12px system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    for (const p of parts) {
+      const px = sx(p.x);
+      const py = sy(p.y);
+      switch (p.kind) {
+        case "compressor": {
+          // A downward-pointing arrow next to the piston + label.
+          ctx.strokeStyle = "#f0a070";
+          ctx.fillStyle = "#f0a070";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(px, py - 14);
+          ctx.lineTo(px, py + 8);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(px - 5, py + 3);
+          ctx.lineTo(px, py + 8);
+          ctx.lineTo(px + 5, py + 3);
+          ctx.fill();
+          drawTag(ctx, p.label, px, py - 22, "#f0a070");
+          break;
+        }
+        case "coil": {
+          drawTag(ctx, p.label, px, py, "#9dd6f0");
+          break;
+        }
+        case "fan": {
+          // Four short arrows pointing toward (px, py). Arrow length + line
+          // width scale with `strength()` so a fan cranked to 5 is visibly
+          // bigger than a fan cranked to 0.1.
+          const s = Math.max(0, Math.min(6, p.strength()));
+          const armMax = Math.max(6, 12 + s * 4); // pixels
+          const arm = armMax * 0.9;
+          const stroke = 1 + s * 0.4;
+          const alpha = 0.35 + Math.min(0.6, s * 0.15);
+          ctx.strokeStyle = `rgba(220,180,90,${alpha.toFixed(2)})`;
+          ctx.fillStyle = `rgba(220,180,90,${alpha.toFixed(2)})`;
+          ctx.lineWidth = stroke;
+          for (let a = 0; a < 4; a++) {
+            const theta = (a * Math.PI) / 2 + Math.PI / 4;
+            const dx = Math.cos(theta);
+            const dy = Math.sin(theta);
+            const x0 = px + dx * (arm + 4);
+            const y0 = py + dy * (arm + 4);
+            const x1 = px + dx * 6;
+            const y1 = py + dy * 6;
+            ctx.beginPath();
+            ctx.moveTo(x0, y0);
+            ctx.lineTo(x1, y1);
+            ctx.stroke();
+            // Arrowhead
+            const head = 4 + s * 0.5;
+            const perpX = -dy;
+            const perpY = dx;
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x1 + dx * head + perpX * head * 0.5,
+                       y1 + dy * head + perpY * head * 0.5);
+            ctx.lineTo(x1 + dx * head - perpX * head * 0.5,
+                       y1 + dy * head - perpY * head * 0.5);
+            ctx.closePath();
+            ctx.fill();
+          }
+          if (p.label) drawTag(ctx, p.label, px, py + armMax + 12, "#dcb45a");
+          break;
+        }
+        case "label":
+          drawTag(ctx, p.label, px, py, "#c7cdd6");
+          break;
+      }
+    }
+    // Suppress unused-var warning on `scale` — retained for future icon sizing.
+    void scale;
   }
 
   private drawCelsiusLegend(

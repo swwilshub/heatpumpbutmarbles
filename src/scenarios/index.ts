@@ -4,7 +4,10 @@ import { Rng } from "../sim/rng";
 import { addHeatExchanger } from "../sim/heatExchanger";
 import { MovingSegment } from "../sim/movingSegment";
 import type { LineSegment, PotentialParams } from "../sim/types";
-import type { RegionOverlay as RendererRegion } from "../render/canvasRenderer";
+import type {
+  RegionOverlay as RendererRegion,
+  PartSchematic,
+} from "../render/canvasRenderer";
 import type { UnitAnchors } from "../units";
 import { DEFAULT_ANCHORS } from "../units";
 
@@ -58,13 +61,11 @@ export interface Scenario {
     tick: (step: number) => void;
     readouts?: Readout[];
     regions?: Region[];
-    // Unit anchors — defaults to DEFAULT_ANCHORS.
     unitAnchors?: UnitAnchors;
-    // Optional palette range in °C for the legend.
     cMin?: number;
     cMax?: number;
-    // Live sliders in the panel.
     sliders?: ScenarioSlider[];
+    parts?: PartSchematic[];
   };
 }
 
@@ -440,8 +441,10 @@ function sandbox(): Scenario["build"] {
       tick,
       unitAnchors: anchors,
       regions: [
+        // Tint only — label lives as a "label" schematic below so it doesn't
+        // collide with the "coil" label at the top of the same strip.
         {
-          label: "reservoir (outside)",
+          label: "",
           xMin: -3, yMin: 0, xMax: 0, yMax: CH_H,
           tint: "rgba(210,80,90,0.10)",
         },
@@ -517,6 +520,29 @@ function sandbox(): Scenario["build"] {
             state.reservoirC = v;
             condTherm.targetT = cToT(v);
           },
+        },
+      ],
+      parts: [
+        { kind: "coil", x: 2, y: CH_H - 0.6, label: "coil" },
+        // Reservoir label — placed at the bottom of the tint strip so it
+        // doesn't collide with the coil label at the top.
+        { kind: "label", x: -1.5, y: 0.8, label: "reservoir" },
+        // Fan indicator sits in the reservoir tint strip. Arrows scale with
+        // γ so cranking the fan to zero visibly shrinks them.
+        {
+          kind: "fan",
+          x: -1.8,
+          y: CH_H / 2,
+          strength: () => state.fanStrength,
+          label: "fan",
+        },
+        // Compressor label + arrow above the middle of the piston's travel
+        // range, pointing DOWN into the chamber toward the orange segment.
+        {
+          kind: "compressor",
+          x: (PISTON_LEFT + PISTON_RIGHT) / 2,
+          y: CH_H + 0.6,
+          label: "compressor",
         },
       ],
       cMin: -30,

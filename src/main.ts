@@ -1,4 +1,4 @@
-import { CanvasRenderer } from "./render/canvasRenderer";
+import { CanvasRenderer, type PartSchematic } from "./render/canvasRenderer";
 import {
   SCENARIOS,
   scenarioById,
@@ -50,6 +50,7 @@ let anchors: UnitAnchors = DEFAULT_ANCHORS;
 let cMin: number | undefined;
 let cMax: number | undefined;
 let regions: Region[] = [];
+let parts: PartSchematic[] = [];
 let currentId = SCENARIOS[0]!.id;
 
 function unitMode(): UnitMode {
@@ -75,6 +76,7 @@ function load(id: string) {
   readouts = built.readouts ?? [];
   anchors = built.unitAnchors ?? DEFAULT_ANCHORS;
   regions = built.regions ?? [];
+  parts = built.parts ?? [];
   cMin = built.cMin;
   cMax = built.cMax;
   readoutsEl.innerHTML = "";
@@ -185,6 +187,7 @@ function frame(now: number) {
     atomRadius: 0.5,
     anchors,
     regions: rendererRegions,
+    parts,
     drawLegend: true,
     cMin,
     cMax,

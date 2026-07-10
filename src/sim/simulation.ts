@@ -130,6 +130,14 @@ export class Simulation {
   homeX: Float64Array;
   homeY: Float64Array;
   tetherK: Float64Array;
+  // Per-atom exponentially-smoothed v². Renderer colours by this instead of
+  // raw v² so individual atoms don't flicker across the whole palette with
+  // every Maxwell-Boltzmann fluctuation (v² is exponentially distributed;
+  // its σ equals its mean, so instantaneous colour is nearly meaningless).
+  // Smoothing over ~30 steps reduces σ by √30 ≈ 5×, still short enough to
+  // follow bulk temperature changes during a compression stroke.
+  smoothedV2: Float64Array;
+  smoothAlpha = 0.97;
   n = 0;
   step = 0;
   time = 0;
@@ -156,6 +164,7 @@ export class Simulation {
     this.homeX = new Float64Array(cap);
     this.homeY = new Float64Array(cap);
     this.tetherK = new Float64Array(cap);
+    this.smoothedV2 = new Float64Array(cap);
     const rc = effectiveCutoff(config.potential);
     this.rCut2 = rc * rc;
     this.uShift = shiftEnergy(config.potential);
@@ -179,6 +188,9 @@ export class Simulation {
     this.homeX[i] = opts?.homeX ?? 0;
     this.homeY[i] = opts?.homeY ?? 0;
     this.tetherK[i] = opts?.tetherK ?? 0;
+    // Seed smoothed v² at current v² so first-frame colouring is correct
+    // rather than showing every atom as dead-cold until smoothing catches up.
+    this.smoothedV2[i] = vx * vx + vy * vy;
     return i;
   }
 
@@ -215,9 +227,15 @@ export class Simulation {
       // Advance moving segments so they're at t+dt before force evaluation.
       for (const m of this.movingSegments) m.advance(dt);
       this.computeForces();
+      const smoothedV2 = this.smoothedV2;
+      const alpha = this.smoothAlpha;
+      const oneMinusAlpha = 1 - alpha;
       for (let i = 0; i < n; i++) {
-        velX[i] = velX[i]! + halfDt * accX[i]!;
-        velY[i] = velY[i]! + halfDt * accY[i]!;
+        const vx = velX[i]! + halfDt * accX[i]!;
+        const vy = velY[i]! + halfDt * accY[i]!;
+        velX[i] = vx;
+        velY[i] = vy;
+        smoothedV2[i] = alpha * smoothedV2[i]! + oneMinusAlpha * (vx * vx + vy * vy);
       }
       // Langevin — applied after velocity is complete. Fluctuation-dissipation
       // guarantees the thermostatted atoms' velocity distribution converges to
