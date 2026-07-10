@@ -65,8 +65,10 @@
         </div>
         <div id="readouts" style="border-top:1px solid #1e222b;margin-top:10px;padding-top:8px;"></div>
         <details style="margin-top:14px;font-size:11px;color:#8b93a1;line-height:1.5;">
-          <summary style="cursor:pointer;color:#c7cdd6;">why do some atoms briefly look hot?</summary>
-          <p style="margin:6px 0 0 0;">Individual atom speeds in a gas at temperature T follow a Maxwell-Boltzmann distribution — v² is exponentially distributed with σ equal to its mean. Even in a uniform-temperature gas about 5% of atoms are momentarily above 3× the average, which reads as "hot" on the palette. The renderer smooths each atom's v² over about 30 steps (long enough to sample the distribution, short enough to still show a compression stroke live) so what you see is the atom's <em>local</em> temperature, not a single frozen instant of thermal noise.</p>
+          <summary style="cursor:pointer;color:#c7cdd6;">what does each marble's colour mean?</summary>
+          <p style="margin:6px 0 0 0;">Each marble's colour shows <strong>its own speed</strong> — that's what a single atom actually has. Temperature isn't a property of one atom; it's the <em>average</em> speed of many atoms in the same region. The °C ticks on the legend are the temperature you'd measure if the whole gas were at that speed.</p>
+          <p style="margin:6px 0 0 0;">In a gas at any single temperature, individual speeds follow a Maxwell-Boltzmann distribution — a wide bell curve of fast, medium, and slow marbles all present at once. About 5% of marbles are momentarily above 3× the average speed, which reads as "hot" on the palette even though the gas overall isn't. To keep the eye from being dazzled the renderer smooths each marble's v² over about 30 steps so it shows the marble's local speed, not thermal noise.</p>
+          <p style="margin:6px 0 0 0;">The <em>region</em> labels (indoor air: X °C, refrigerant: Y °C) are means over many marbles — those are real temperatures.</p>
         </details>
       </div>
     </div>

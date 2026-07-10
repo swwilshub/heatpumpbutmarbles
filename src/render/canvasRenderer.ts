@@ -100,7 +100,7 @@ export class CanvasRenderer {
     ctx.fillRect(0, 0, width, height);
     const anchors = opts.anchors ?? DEFAULT_ANCHORS;
 
-    const legendH = opts.drawLegend ? 46 : 0;
+    const legendH = opts.drawLegend ? 56 : 0;
     const stageH = height - legendH;
 
     const dom = sim.config.domain;
@@ -156,12 +156,17 @@ export class CanvasRenderer {
     }
 
     // Atoms — colour by each atom's TIME-AVERAGED v² (the exponentially
-    // smoothed value the sim maintains). Instantaneous v² is exponentially
-    // distributed (σ = mean), so a plain v² colouring makes every 20th atom
-    // look "hot" even in a uniform-temperature gas. Smoothed v² is what
-    // people mean when they say "this atom's temperature" — it's the local
-    // kinetic energy averaged over enough collision events to be a
-    // meaningful sample of the local Maxwell-Boltzmann distribution.
+    // smoothed value the sim maintains). This is the atom's SPEED, not its
+    // "temperature" — a single atom doesn't have a temperature, only a
+    // velocity. The palette maps that speed through the °C anchors so a
+    // fast atom reads warm and a slow one reads cool, but the legend labels
+    // this as "marble speed" rather than "temperature". Region and readout
+    // labels stay in °C — those are aggregates over many atoms, which is
+    // what temperature actually is.
+    //
+    // Smoothing (~30 steps) suppresses the huge instantaneous v²
+    // fluctuations you get from the exponential MB distribution, so what
+    // you see is the atom's local speed, not thermal noise.
     const r = opts.atomRadius * scale;
     const posX = sim.posX;
     const posY = sim.posY;
@@ -343,13 +348,30 @@ export class CanvasRenderer {
     cMin: number,
     cMax: number
   ): void {
+    // Legend maps ATOM SPEED to a colour. A single atom has a velocity, not a
+    // temperature — but the °C ticks are the equivalent T if the whole gas
+    // were at that speed, which is a useful intuition for the eye. Legend
+    // header calls it out.
     ctx.fillStyle = "#0b0d12";
     ctx.fillRect(0, y, w, h);
     const samples = paletteSamplesCelsius(96, cMin, cMax);
-    const barX = 40;
-    const barY = y + 10;
-    const barW = w - 80;
-    const barH = 14;
+    const barX = 8;
+    const barY = y + 14;
+    const barW = w - 30;
+    const barH = 12;
+    // Header row above the bar
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.fillStyle = "#8b93a1";
+    ctx.textBaseline = "top";
+    ctx.textAlign = "left";
+    ctx.fillText("marble speed", barX, y + 2);
+    ctx.textAlign = "right";
+    ctx.fillText("(°C = mean of many marbles)", barX + barW, y + 2);
+    ctx.textAlign = "left";
+    // slow → fast text ends
+    ctx.font = "9px system-ui, sans-serif";
+    ctx.fillStyle = "#c7cdd6";
+    // Colour bar
     for (let i = 0; i < samples.length; i++) {
       ctx.fillStyle = samples[i]!;
       const x0 = barX + (i / samples.length) * barW;
@@ -360,7 +382,6 @@ export class CanvasRenderer {
     ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
     // Ticks — every 30 °C, always showing 0 °C.
     ctx.font = "11px system-ui, sans-serif";
-    ctx.fillStyle = "#c7cdd6";
     ctx.textBaseline = "top";
     const tickStep = 30;
     const startTick = Math.ceil(cMin / tickStep) * tickStep;
