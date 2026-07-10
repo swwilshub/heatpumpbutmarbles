@@ -52,8 +52,21 @@ export function accumulateBarrierForce(
     // U_LJ(rCut) = 4ε(1/4 - 1/2) = -ε, so shift = -ε and U_wca = U_LJ + ε.
     const u = 4 * s.epsilon * (sr12 - sr6) + s.epsilon;
     const k = (24 * s.epsilon * (2 * sr12 - sr6)) / r2;
-    out.fx += k * rx;
-    out.fy += k * ry;
+    let fx = k * rx;
+    let fy = k * ry;
+    // Force cap — protects the integrator from r⁻¹³ blow-ups when an atom
+    // slips inside σ (typically at a moving-segment reactivation or a
+    // corner where two barriers meet). Same standard MD safety net as in
+    // MovingSegment.applyForce.
+    const F_CAP = 500;
+    const fMag2 = fx * fx + fy * fy;
+    if (fMag2 > F_CAP * F_CAP) {
+      const s2 = F_CAP / Math.sqrt(fMag2);
+      fx *= s2;
+      fy *= s2;
+    }
+    out.fx += fx;
+    out.fy += fy;
     out.u += u;
   }
 }

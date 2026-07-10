@@ -136,14 +136,23 @@ export class CanvasRenderer {
     ctx.stroke();
 
     if (sim.movingSegments.length > 0) {
-      ctx.strokeStyle = "#f0a070";
       ctx.lineWidth = Math.max(2, 0.22 * scale);
-      ctx.beginPath();
       for (const m of sim.movingSegments) {
+        // Active segments draw bold orange; inactive ("return stroke") draw
+        // faint dashed so the user can see the pump cycle without confusion.
+        if (m.active) {
+          ctx.strokeStyle = "#f0a070";
+          ctx.setLineDash([]);
+        } else {
+          ctx.strokeStyle = "rgba(240,160,112,0.20)";
+          ctx.setLineDash([4, 3]);
+        }
+        ctx.beginPath();
         ctx.moveTo(sx(m.ax), sy(m.ay));
         ctx.lineTo(sx(m.bx), sy(m.by));
+        ctx.stroke();
       }
-      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // Atoms — colour by each atom's TIME-AVERAGED v² (the exponentially

@@ -928,6 +928,324 @@ function fullHeatPump(): Scenario["build"] {
   };
 }
 
+// Real closed-loop heat pump — a single ring-shaped chamber with refrigerant
+// atoms actually circulating. The compressor is a horizontal segment in the
+// left leg of the loop that pumps upward on its active stroke, then phases
+// out (active=false) and teleports back down for the return, then reactivates.
+// This is functionally equivalent to a piston with intake/discharge check
+// valves — the only mechanism for net one-way pumping without directional
+// physics.
+//
+//         ┌── condenser wall (top, hot) ──┐
+//         │                                │
+//         │  →→→→→  gas flows right  →→→→→│
+//         │                                │
+//    left │  ↑                             │  right
+//    leg  │  ↑ compressor pushes up        │  leg (down)
+//         │  ↑                             │       │
+//         │                                │       ▼ valve constriction
+//         │                                │
+//         │  ←←←←  gas returns left  ←←←←  │
+//         │                                │
+//         └── evaporator wall (bottom, cold) ┘
+//
+// Because the compressor maintains a pressure differential between the top
+// and bottom of the left leg, gas circulates clockwise. Real gas/liquid
+// behaviour emerges: refrigerant piles up at high density near the condenser
+// (attractive LJ well causes visible condensation), thins out on the
+// evaporator side. Tuning ANY slider cascades through the whole system.
+function closedLoop(): Scenario["build"] {
+  return () => {
+    const anchors: UnitAnchors = { ...DEFAULT_ANCHORS };
+    const cToT = (c: number) => {
+      const m = (anchors.t2_star - anchors.t1_star) / (anchors.t2_celsius - anchors.t1_celsius);
+      return anchors.t1_star + m * (c - anchors.t1_celsius);
+    };
+    // Outer rectangle bounds
+    const OX = 50;
+    const OY = 30;
+    // Inner obstacle bounds (creates the ring hole)
+    const IX0 = 12, IX1 = 38, IY0 = 10, IY1 = 20;
+
+    const state = {
+      pumpSpeed: 0.4,
+      condFan: 1.5,
+      evapFan: 1.5,
+      hotResC: 45,
+      coldResC: -5,
+    };
+    const sim = new Simulation({
+      domain: { xMin: -3, yMin: -3, xMax: OX + 3, yMax: OY + 3 },
+      potential: { kind: "lj", epsilon: 1, sigma: 1, rCut: 2.5 },
+      segments: [],
+      dt: 0.004,
+      capacity: 800,
+    });
+    sim.setRng(new Rng(51));
+
+    const segs: LineSegment[] = [];
+    const wall = (ax: number, ay: number, bx: number, by: number) =>
+      segs.push({ ax, ay, bx, by, epsilon: 1, sigma: 1 });
+
+    // Outer boundary (with GAPS where the heat-exchanger walls go)
+    // — bottom: split into left half, evaporator gap, right half
+    // — top: same with condenser gap
+    const CX0 = 15, CX1 = 35; // exchanger x span (middle 20 units)
+    wall(0, 0, CX0, 0);         // bottom-left
+    wall(CX1, 0, OX, 0);        // bottom-right
+    wall(OX, 0, OX, OY);        // right
+    wall(OX, OY, CX1, OY);      // top-right
+    wall(CX0, OY, 0, OY);       // top-left
+    wall(0, OY, 0, 0);          // left
+
+    // Inner obstacle boundary
+    wall(IX0, IY0, IX1, IY0);   // inner bottom
+    wall(IX1, IY0, IX1, IY1);   // inner right
+    wall(IX1, IY1, IX0, IY1);   // inner top
+    wall(IX0, IY1, IX0, IY0);   // inner left
+
+    // Valve — narrow constriction in the RIGHT leg. Two short vertical
+    // pieces jutting from top and bottom outer walls at x = OX - 6, leaving
+    // a 2σ gap in the middle of the right leg for atoms to squeeze through.
+    // This is the "expansion valve" — density drops sharply as gas expands
+    // from the high-P condenser side into the low-P evaporator side.
+    const VX = OX - 6;
+    const VGAP = 1.0;
+    const VMID = (IY0 + IY1) / 2;
+    wall(VX, IY1, VX, VMID + VGAP);
+    wall(VX, VMID - VGAP, VX, IY0);
+
+    // Condenser heat-exchanger — line along the top wall, from x=CX0 to CX1.
+    // Wall atoms sit just BELOW y=OY. Reservoir tint above.
+    const cond = addHeatExchanger(sim, {
+      ax: CX0, ay: OY, bx: CX1, by: OY,
+      spacing: 1.15, layers: 2, layerOffset: 1.0,
+      tetherK: 40, sigma: 1, epsilon: 1,
+    });
+    segs.push(cond.barrier);
+    const condTherm = new ThermostatGroup(cond.atomIndices, cToT(state.hotResC), state.condFan);
+    sim.thermostats.push(condTherm);
+
+    // Evaporator heat-exchanger — line along the bottom wall.
+    const evap = addHeatExchanger(sim, {
+      ax: CX0, ay: 0, bx: CX1, by: 0,
+      spacing: 1.15, layers: 2, layerOffset: 1.0,
+      tetherK: 40, sigma: 1, epsilon: 1,
+    });
+    segs.push(evap.barrier);
+    const evapTherm = new ThermostatGroup(evap.atomIndices, cToT(state.coldResC), state.evapFan);
+    sim.thermostats.push(evapTherm);
+
+    // Compressor — horizontal segment spanning the full width of the LEFT
+    // leg (from x=1 to x=IX0-0.5), inside the ring at some y between IY0
+    // and IY1. It pumps ONE-WAY up: active=true while moving up, active=false
+    // (invisible ghost) during the fast return stroke. Net effect is that
+    // atoms in the left leg are shepherded upward every cycle, establishing
+    // a pressure differential and driving clockwise circulation.
+    const PUMP_LEFT = 1;
+    const PUMP_RIGHT = IX0 - 0.5;
+    const PUMP_BOTTOM = IY0 + 0.5;
+    const PUMP_TOP = IY1 - 0.5;
+    const pump = new MovingSegment({
+      ax: PUMP_LEFT, ay: PUMP_BOTTOM,
+      bx: PUMP_RIGHT, by: PUMP_BOTTOM,
+      vax: 0, vay: 0, vbx: 0, vby: 0,
+      epsilon: 1, sigma: 1.2,
+    });
+    sim.movingSegments.push(pump);
+
+    // Seed refrigerant EVERYWHERE around the ring (avoiding the inner
+    // obstacle, the exchanger wall atom columns, and a small clearance zone
+    // around the compressor's starting position so we don't overlap it).
+    const seedRegions = [
+      // Bottom leg (excluding exchanger x-band interior)
+      { xMin: 2, yMin: 2.5, xMax: IX0 - 0.5, yMax: IY0 - 0.5 },
+      { xMin: IX1 + 0.5, yMin: 2.5, xMax: VX - 0.5, yMax: IY0 - 0.5 },
+      { xMin: VX + 0.5, yMin: 2.5, xMax: OX - 1, yMax: IY0 - 0.5 },
+      // Top leg
+      { xMin: 2, yMin: IY1 + 0.5, xMax: IX0 - 0.5, yMax: OY - 2.5 },
+      { xMin: IX1 + 0.5, yMin: IY1 + 0.5, xMax: OX - 1, yMax: OY - 2.5 },
+      // Right leg
+      { xMin: IX1 + 0.5, yMin: IY0 + 0.5, xMax: VX - 0.5, yMax: IY1 - 0.5 },
+      { xMin: VX + 0.5, yMin: IY0 + 0.5, xMax: OX - 1, yMax: IY1 - 0.5 },
+      // Left leg — start above pump's initial position
+      { xMin: 2, yMin: PUMP_BOTTOM + 1.5, xMax: IX0 - 0.5, yMax: IY1 - 0.5 },
+    ];
+    const gasIdx: number[] = [];
+    for (const r of seedRegions) {
+      const first = sim.n;
+      seedLattice(sim, r, 1.35, 1.0, new Rng(Math.floor(r.xMin * 100 + r.yMin)));
+      for (let i = first; i < sim.n; i++) gasIdx.push(i);
+    }
+
+    sim.setSegments(segs);
+    sim.primeForces();
+
+    const PUMP_STROKE_TIME = 40; // sim time units (= 10000 steps) — SLOW
+    // Return stroke is fast: 5× the pump speed downward with active=false.
+    // Empirically 5× gives a compact return without spooking the eye.
+    const RETURN_FACTOR = 6;
+    let phase: "pump" | "return" = "pump";
+    let started = false;
+    const tick = (step: number) => {
+      if (step < 200 && step % 25 === 0 && step > 0) {
+        rescaleToTemperature(sim, 1.0, gasIdx);
+      }
+      if (!started && step >= 200) {
+        started = true;
+        pump.active = true;
+        pump.vay = state.pumpSpeed;
+        pump.vby = state.pumpSpeed;
+        pump.workInput = 0;
+        pump.workAbsolute = 0;
+        condTherm.energyIn = 0; condTherm.energyOut = 0;
+        evapTherm.energyIn = 0; evapTherm.energyOut = 0;
+      }
+      if (!started) return;
+      if (phase === "pump") {
+        if (pump.ay >= PUMP_TOP) {
+          phase = "return";
+          pump.active = false;
+          pump.vay = -state.pumpSpeed * RETURN_FACTOR;
+          pump.vby = -state.pumpSpeed * RETURN_FACTOR;
+        }
+      } else {
+        if (pump.ay <= PUMP_BOTTOM) {
+          phase = "pump";
+          // CRITICAL: before reactivating, displace any atoms that flowed
+          // into the segment's contact zone during the ghost return stroke.
+          // Without this, an r⁻¹³ WCA spike sends them to relativistic
+          // velocities on the first reactivated frame and the sim explodes.
+          pump.clearContactZone(sim);
+          pump.active = true;
+          pump.vay = state.pumpSpeed;
+          pump.vby = state.pumpSpeed;
+        }
+      }
+    };
+    void PUMP_STROKE_TIME;
+
+    return {
+      sim,
+      tick,
+      unitAnchors: anchors,
+      cMin: -30,
+      cMax: 120,
+      regions: [
+        // Reservoir tints — hot above the top, cold below the bottom
+        {
+          label: "",
+          xMin: CX0, yMin: OY, xMax: CX1, yMax: OY + 2.5,
+          tint: "rgba(210,80,90,0.14)",
+        },
+        {
+          label: "",
+          xMin: CX0, yMin: -2.5, xMax: CX1, yMax: 0,
+          tint: "rgba(70,130,180,0.16)",
+        },
+      ],
+      readouts: [
+        {
+          label: "condenser coil T",
+          v: T(() => sim.temperatureOf(cond.atomIndices)),
+        },
+        {
+          label: "evaporator coil T",
+          v: T(() => sim.temperatureOf(evap.atomIndices)),
+        },
+        {
+          label: "electricity used (W)",
+          v: R(() => (started ? pump.workAbsolute.toFixed(1) : "—")),
+        },
+        {
+          label: "Q_hot (to indoors)",
+          v: R(() =>
+            started ? (condTherm.energyOut - condTherm.energyIn).toFixed(1) : "—"
+          ),
+        },
+        {
+          label: "Q_cold (from outdoors)",
+          v: R(() =>
+            started ? (evapTherm.energyIn - evapTherm.energyOut).toFixed(1) : "—"
+          ),
+        },
+        {
+          label: "COP (Q_hot / W)",
+          v: R(() => {
+            if (!started || pump.workAbsolute <= 0) return "—";
+            const q = condTherm.energyOut - condTherm.energyIn;
+            return (q / pump.workAbsolute).toFixed(2);
+          }),
+        },
+        {
+          label: "pump phase",
+          v: R(() => (started ? phase : "—")),
+        },
+      ],
+      sliders: [
+        {
+          id: "pumpSpeed",
+          label: "compressor speed",
+          min: 0.05, max: 1.2, step: 0.05, initial: state.pumpSpeed,
+          format: (v) => v.toFixed(2),
+          onChange: (v) => {
+            state.pumpSpeed = v;
+            const s = phase === "pump" ? 1 : -RETURN_FACTOR;
+            pump.vay = s * v;
+            pump.vby = s * v;
+          },
+        },
+        {
+          id: "condFan",
+          label: "indoor fan (γ)",
+          min: 0.05, max: 5.0, step: 0.05, initial: state.condFan,
+          format: (v) => v.toFixed(2),
+          onChange: (v) => { state.condFan = v; condTherm.gamma = v; },
+        },
+        {
+          id: "evapFan",
+          label: "outdoor fan (γ)",
+          min: 0.05, max: 5.0, step: 0.05, initial: state.evapFan,
+          format: (v) => v.toFixed(2),
+          onChange: (v) => { state.evapFan = v; evapTherm.gamma = v; },
+        },
+        {
+          id: "hotResC",
+          label: "indoor T (°C)",
+          min: 10, max: 60, step: 1, initial: state.hotResC,
+          format: (v) => `${v.toFixed(0)} °C`,
+          onChange: (v) => { state.hotResC = v; condTherm.targetT = cToT(v); },
+        },
+        {
+          id: "coldResC",
+          label: "outdoor T (°C)",
+          min: -25, max: 25, step: 1, initial: state.coldResC,
+          format: (v) => `${v.toFixed(0)} °C`,
+          onChange: (v) => { state.coldResC = v; evapTherm.targetT = cToT(v); },
+        },
+      ],
+      parts: [
+        { kind: "coil", x: (CX0 + CX1) / 2, y: OY - 0.7, label: "condenser" },
+        { kind: "coil", x: (CX0 + CX1) / 2, y: 0.7, label: "evaporator" },
+        { kind: "label", x: (CX0 + CX1) / 2, y: OY + 1.5, label: "indoor" },
+        { kind: "label", x: (CX0 + CX1) / 2, y: -1.5, label: "outdoor" },
+        { kind: "compressor", x: (PUMP_LEFT + PUMP_RIGHT) / 2, y: IY1 + 2, label: "compressor" },
+        { kind: "label", x: VX, y: IY0 - 1.2, label: "valve" },
+        {
+          kind: "fan",
+          x: (CX0 + CX1) / 2, y: OY + 1.5,
+          strength: () => state.condFan,
+        },
+        {
+          kind: "fan",
+          x: (CX0 + CX1) / 2, y: -1.5,
+          strength: () => state.evapFan,
+        },
+      ],
+    };
+  };
+}
+
 export const SCENARIOS: Scenario[] = [
   {
     id: "confined_lj",
@@ -970,6 +1288,12 @@ export const SCENARIOS: Scenario[] = [
     name: "full heat pump — schematic layout",
     blurb: "All four heat-pump stages laid out as a diagram — compressor, condenser, expansion valve, evaporator — each a separate chamber with its own real physics. Dashed arrows show the schematic flow (hot vapour → liquid → cold mix → cool vapour → back). Coloured by temperature: watch the condenser gas glow yellow against a hot indoor coil, the evaporator gas sit deep blue against a cold outdoor coil, and the valve maintain a density gradient across its narrow gap. The sub-chambers are physically isolated (atoms don't circulate) so each part shows its own local behaviour without geometry compromises.",
     build: fullHeatPump(),
+  },
+  {
+    id: "closed_loop",
+    name: "closed loop — real circulating heat pump (experimental)",
+    blurb: "A single ring-shaped chamber with refrigerant ACTUALLY circulating. The compressor on the left pushes atoms upward on its active stroke (solid orange), phases out (dashed, translucent) for the fast return — same mechanism as a piston with intake/discharge check valves. Circulation is clockwise; density and temperature gradients emerge naturally around the loop. Experimental: at high pump speed or over long runs the compressor's reactivation shock can send a stray atom to high velocity, temporarily corrupting mean-T readings. Coil surface T and Q values remain sensible.",
+    build: closedLoop(),
   },
 ];
 
