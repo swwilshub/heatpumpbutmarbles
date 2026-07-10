@@ -773,12 +773,21 @@ function fullHeatPump(): Scenario["build"] {
     sim.thermostats.push(condTherm);
     sim.thermostats.push(evapTherm);
 
-    // === Compressor piston =================================================
-    // Sits inside the compressor chamber, to the RIGHT of the suction gap.
-    // Active rightward stroke drives gas out through discharge; fast ghost
-    // return-stroke slides left through the empty compression zone without
-    // sucking atoms back. Piston travel keeps entirely right of the suction
-    // gap so the suction port isn't briefly sealed each cycle.
+    // === Compressor piston + check valves ==================================
+    // Piston sits inside the compressor chamber, to the RIGHT of the suction
+    // gap. Active rightward stroke drives gas out through the discharge
+    // pipe; fast ghost return-stroke slides left through the empty
+    // compression zone without dragging atoms backward.
+    //
+    // Ghost return alone is NOT enough — it stops the piston from pushing
+    // atoms back, but nothing stops atoms in the discharge pipe from
+    // flowing back INTO the compressor chamber under a mild pressure
+    // gradient. Real compressors have one-way check valves for exactly this
+    // reason. We model them as zero-velocity MovingSegments occupying the
+    // discharge gap and the suction gap, toggled active/inactive in phase
+    // with the piston:
+    //   push (piston →): discharge OPEN (gas leaves), suction CLOSED (no back-fill loop)
+    //   return (piston ←): discharge CLOSED (no back-flow), suction OPEN (fresh gas from evap)
     const PISTON_LEFT = suctionX + suctionHW + 1.5;
     const PISTON_RIGHT = compX1 - 3;
     const PISTON_RETURN_FACTOR = 6;
@@ -788,6 +797,22 @@ function fullHeatPump(): Scenario["build"] {
       epsilon: 1, sigma: 1.2,
     });
     sim.movingSegments.push(piston);
+    const dischargeValve = new MovingSegment({
+      ax: compX1, ay: dischargeY - dischargeHW,
+      bx: compX1, by: dischargeY + dischargeHW,
+      vax: 0, vay: 0, vbx: 0, vby: 0,
+      epsilon: 1, sigma: 1,
+    });
+    dischargeValve.active = false; // open at start (push phase)
+    sim.movingSegments.push(dischargeValve);
+    const suctionValve = new MovingSegment({
+      ax: suctionX - suctionHW, ay: compY0,
+      bx: suctionX + suctionHW, by: compY0,
+      vax: 0, vay: 0, vbx: 0, vby: 0,
+      epsilon: 1, sigma: 1,
+    });
+    suctionValve.active = true; // closed at start (push phase — no back-fill loop)
+    sim.movingSegments.push(suctionValve);
     let pistonPhase: "push" | "return" = "push";
 
     sim.setSegments(segs);
@@ -808,20 +833,28 @@ function fullHeatPump(): Scenario["build"] {
         piston.vbx = state.pistonSpeed;
         piston.workInput = 0;
         piston.workAbsolute = 0;
+        // Initial valve state matches push phase.
+        dischargeValve.active = false;
+        suctionValve.clearContactZone(sim);
+        suctionValve.active = true;
         condTherm.energyIn = 0; condTherm.energyOut = 0;
         evapTherm.energyIn = 0; evapTherm.energyOut = 0;
       }
       if (started) {
-        // One-way pumping cycle. Active rightward stroke pushes gas out the
-        // discharge pipe; fast ghost return-stroke slides back without
-        // grabbing anything. clearContactZone() prevents an r⁻¹³ spike
-        // the moment we reactivate atop atoms that have drifted in.
+        // One-way pumping cycle. clearContactZone() prevents an r⁻¹³ spike
+        // the moment we reactivate ANY segment atop atoms that have drifted
+        // into its contact zone.
         if (pistonPhase === "push") {
           if (piston.ax >= PISTON_RIGHT) {
             pistonPhase = "return";
             piston.active = false;
             piston.vax = -state.pistonSpeed * PISTON_RETURN_FACTOR;
             piston.vbx = -state.pistonSpeed * PISTON_RETURN_FACTOR;
+            // Close discharge (no back-flow from hot condenser side); open
+            // suction (fresh cool gas from evaporator flows in).
+            dischargeValve.clearContactZone(sim);
+            dischargeValve.active = true;
+            suctionValve.active = false;
           }
         } else {
           if (piston.ax <= PISTON_LEFT) {
@@ -830,6 +863,11 @@ function fullHeatPump(): Scenario["build"] {
             piston.active = true;
             piston.vax = state.pistonSpeed;
             piston.vbx = state.pistonSpeed;
+            // Open discharge (gas can leave); close suction (no back-fill
+            // shortcut for gas we're about to compress).
+            dischargeValve.active = false;
+            suctionValve.clearContactZone(sim);
+            suctionValve.active = true;
           }
         }
       }
