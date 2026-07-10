@@ -5,6 +5,7 @@ import {
   regionToRenderer,
   type Readout,
   type Region,
+  type ScenarioSlider,
 } from "./scenarios";
 import type { Simulation } from "./sim/simulation";
 import { DEFAULT_ANCHORS, formatTemperature, type UnitAnchors, type UnitMode } from "./units";
@@ -25,6 +26,7 @@ const pauseBtn = document.getElementById("pause") as HTMLButtonElement;
 const stepBtn = document.getElementById("step") as HTMLButtonElement;
 const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 const readoutsEl = document.getElementById("readouts") as HTMLElement;
+const slidersEl = document.getElementById("sliders") as HTMLElement;
 const dilationSlider = document.getElementById("dilation") as HTMLInputElement;
 const dilationLabel = document.getElementById("dilationLabel") as HTMLElement;
 const unitSel = document.getElementById("units") as HTMLSelectElement;
@@ -91,6 +93,41 @@ function load(id: string) {
     row.appendChild(stat);
     readoutsEl.appendChild(row);
     readoutEls.push(val);
+  }
+  renderSliders(built.sliders ?? []);
+}
+
+function renderSliders(sliders: ScenarioSlider[]) {
+  slidersEl.innerHTML = "";
+  if (sliders.length === 0) return;
+  const title = document.createElement("div");
+  title.textContent = "parts";
+  title.style.cssText = "font-size:11px;color:#8b93a1;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;";
+  slidersEl.appendChild(title);
+  for (const s of sliders) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const label = document.createElement("label");
+    label.textContent = s.label;
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = String(s.min);
+    input.max = String(s.max);
+    input.step = String(s.step);
+    input.value = String(s.initial);
+    const valSpan = document.createElement("span");
+    valSpan.style.cssText = "font-variant-numeric:tabular-nums;color:#c7cdd6;font-size:12px;float:right;";
+    const fmt = s.format ?? ((v: number) => v.toFixed(2));
+    valSpan.textContent = fmt(s.initial);
+    label.appendChild(valSpan);
+    input.addEventListener("input", () => {
+      const v = Number(input.value);
+      valSpan.textContent = fmt(v);
+      s.onChange(v);
+    });
+    row.appendChild(label);
+    row.appendChild(input);
+    slidersEl.appendChild(row);
   }
 }
 
