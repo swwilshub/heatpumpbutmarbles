@@ -149,6 +149,13 @@ export class Simulation {
   private rCut2: number;
   private uShift: number;
   private lastPE = 0;
+  // Virial accumulator from the last force pass. In 2D, pressure is
+  //   P = (N k_B T + virial / d) / V,  d=2
+  // where virial = Σ_pairs r·F. We accumulate k * r² per pair
+  // (F = k · r_vec so r·F = k · r²), so the virial captures the
+  // interaction contribution to the pressure. Kinetic contribution
+  // N T is added in pressure().
+  private lastVirial = 0;
   private barrierAcc: BarrierAccumulator = { fx: 0, fy: 0, u: 0 };
 
   constructor(config: SimulationConfig) {
@@ -200,6 +207,13 @@ export class Simulation {
     this.time = 0;
     this.lastPE = 0;
     this.thermostats = [];
+  }
+
+  // Remove the last atom (LIFO). Cheap — used by the "vacuum" action in the
+  // phases demo to draw the box down toward vacuum without O(N²) shuffling.
+  popAtom(): void {
+    if (this.n <= 0) return;
+    this.n--;
   }
 
   // velocity Verlet (kick-drift-kick) + Langevin thermostat step after kick.
@@ -295,6 +309,7 @@ export class Simulation {
     // cap only clips the pathological one-in-a-million transient.
     const F_CAP = 500;
     const F_CAP2 = F_CAP * F_CAP;
+    let virial = 0;
     this.cells.forEachPair((i, j) => {
       const rx = posX[i]! - posX[j]!;
       const ry = posY[i]! - posY[j]!;
@@ -314,7 +329,12 @@ export class Simulation {
       accX[j] = accX[j]! - fx;
       accY[j] = accY[j]! - fy;
       pe += u;
+      // Virial contribution — r·F. Use k*r² (the uncapped scalar) so pressure
+      // reflects the true intermolecular force during transient collisions,
+      // even when the cap clips the acceleration for stability.
+      virial += k * r2;
     });
+    this.lastVirial = virial;
     // Line-segment barriers — skip tethered atoms (kind===1). This is the
     // "coincident barrier + excluded wall atoms" trick that makes an
     // atom-based wall thermally conductive but leak-proof.
@@ -375,6 +395,33 @@ export class Simulation {
       momentumX: px,
       momentumY: py,
     };
+  }
+
+  // 2D pressure computed from the last force pass. P V = N T + virial/2
+  // where the virial is Σ r·F over pairs. Volume defaults to the domain
+  // area but scenarios can pass a smaller box (e.g. just the chamber, not
+  // the whole domain plus the reservoir strips).
+  pressure(volumeOverride?: number): number {
+    if (this.n === 0) return 0;
+    let ke = 0;
+    let free = 0;
+    const velX = this.velX;
+    const velY = this.velY;
+    const kind = this.kind;
+    const n = this.n;
+    for (let i = 0; i < n; i++) {
+      if (kind[i] !== 0) continue; // tethered wall atoms don't count as "gas"
+      ke += velX[i]! * velX[i]! + velY[i]! * velY[i]!;
+      free++;
+    }
+    const dof = 2 * free;
+    const T = dof > 0 ? (2 * (0.5 * ke)) / dof : 0;
+    let V = volumeOverride;
+    if (V === undefined) {
+      const d = this.config.domain;
+      V = (d.xMax - d.xMin) * (d.yMax - d.yMin);
+    }
+    return V > 0 ? (free * T + this.lastVirial / 2) / V : 0;
   }
 
   // Sum kinetic energy over a specified atom-index set. Used to measure the

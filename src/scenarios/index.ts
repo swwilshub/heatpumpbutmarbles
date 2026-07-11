@@ -38,6 +38,15 @@ export interface Region {
 export const T = (fn: () => number): ReadoutValue => ({ kind: "temperature", value: fn });
 export const R = (fn: () => string): ReadoutValue => ({ kind: "raw", value: fn });
 
+// Push-button action exposed by a scenario — a discrete "do this now"
+// operation, distinct from continuous sliders. Used for the HVAC-style
+// charge / vacuum buttons in the phases demo.
+export interface ScenarioAction {
+  id: string;
+  label: string;
+  onClick: () => void;
+}
+
 // Live sliders exposed by a scenario. The UI renders them as range inputs
 // and pipes changes back through `onChange`. This is the "assemble a heat
 // pump by dialling in the parts" experience — full drag-and-drop is on the
@@ -75,8 +84,13 @@ export interface Scenario {
     cMin?: number;
     cMax?: number;
     sliders?: ScenarioSlider[];
+    actions?: ScenarioAction[];
     parts?: PartSchematic[];
     series?: ScenarioSeries[];
+    // Extended explainer HTML shown at the bottom of the scenario panel.
+    // Used by pedagogical demos (phases, HVAC charge) to walk the user
+    // through what to try.
+    explainer?: string;
   };
 }
 
@@ -372,6 +386,230 @@ function compressorHotExchanger(): Scenario["build"] {
           v: R(() => piston.ax.toFixed(1)),
         },
       ],
+    };
+  };
+}
+
+// A single-box gas / liquid / crystal demo. Refrigerant atoms alone in a
+// closed box, thermostatted to a user-selectable temperature via a
+// Langevin coupling applied every step to the free atoms.
+//
+// Drop T past the LJ freezing point (T* ≈ 0.4 in 2D at reasonable density)
+// and you get a real triangular lattice out of the physics — atoms find
+// their equilibrium spacing at r_min = 2^(1/6)σ and lock into a crystal.
+// Raise T past the boiling point and the same atoms spread out into a gas.
+// Between those, liquid: dense but disordered, atoms sliding past each
+// other.
+//
+// Pressure is measured from the virial equation: P = (N T + Σ r·F / d) / V.
+// The interaction term is what makes the LJ pressure differ from the ideal
+// gas — at low T with attractive well active, pressure DROPS below N T / V
+// because atoms are pulling each other in.
+//
+// HVAC-style charge/vacuum: two action buttons let you add or remove
+// marbles in chunks, mimicking a technician charging refrigerant into an
+// evacuated system.
+function phases(): Scenario["build"] {
+  return () => {
+    // Custom anchors — the phase transitions we're demoing land at very
+    // different reduced temperatures than the heat-pump loops (T* < 0.5 is
+    // solid, T* > 1.5 is gas), so anchor the °C scale so those points fall
+    // in a range users find intuitive.
+    const anchors: UnitAnchors = {
+      t1_star: 0.3, t1_celsius: -80,
+      t2_star: 2.0, t2_celsius: 200,
+    };
+    const cToT = (c: number) => {
+      const m = (anchors.t2_star - anchors.t1_star) / (anchors.t2_celsius - anchors.t1_celsius);
+      return anchors.t1_star + m * (c - anchors.t1_celsius);
+    };
+    const state = {
+      targetC: 60, // °C
+      targetN: 240, // how many marbles the user wants in the box
+    };
+    const BOX = 22;
+    const sim = new Simulation({
+      domain: { xMin: -1, yMin: -1, xMax: BOX + 1, yMax: BOX + 1 },
+      potential: { kind: "lj", epsilon: 1, sigma: 1, rCut: 2.5 },
+      segments: box(0, 0, BOX, BOX),
+      dt: 0.004,
+      capacity: 600,
+    });
+    const rng = new Rng(2601);
+    sim.setRng(rng);
+    // Initial seed: fill the box at a moderate density.
+    seedLattice(sim, { xMin: 1, yMin: 1, xMax: BOX - 1, yMax: BOX - 1 }, 1.25, cToT(state.targetC), rng);
+    sim.primeForces();
+
+    // Langevin coupling applied inside tick() so it stays live even as the
+    // atom count changes. Standard OU update on each free atom's velocity.
+    const gamma = 1.2;
+    const chargeRng = new Rng(9911);
+    const tryPlaceAtom = (targetT: number): boolean => {
+      // Try up to 30 random positions to place a new atom without dropping
+      // it inside another atom's WCA cutoff. If we can't find a spot the
+      // box is essentially full and the "charge" button silently no-ops.
+      const posX = sim.posX;
+      const posY = sim.posY;
+      const kind = sim.kind;
+      const rCutSq = 1.1 * 1.1; // slightly beyond WCA cutoff (1.122σ)
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const x = 1 + chargeRng.next() * (BOX - 2);
+        const y = 1 + chargeRng.next() * (BOX - 2);
+        let ok = true;
+        for (let i = 0; i < sim.n; i++) {
+          if (kind[i] !== 0) continue;
+          const dx = posX[i]! - x;
+          const dy = posY[i]! - y;
+          if (dx * dx + dy * dy < rCutSq) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) {
+          const sigma = Math.sqrt(Math.max(0.05, targetT));
+          const vx = sigma * chargeRng.gauss();
+          const vy = sigma * chargeRng.gauss();
+          sim.addAtom(x, y, vx, vy);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const tick = (step: number) => {
+      // Langevin every step over the current gas atoms.
+      const dt = sim.config.dt;
+      const targetT = cToT(state.targetC);
+      const c1 = Math.exp(-gamma * dt);
+      const c2 = Math.sqrt(Math.max(0, targetT) * (1 - c1 * c1));
+      const velX = sim.velX;
+      const velY = sim.velY;
+      const kind = sim.kind;
+      for (let i = 0; i < sim.n; i++) {
+        if (kind[i] !== 0) continue;
+        velX[i] = c1 * velX[i]! + c2 * rng.gauss();
+        velY[i] = c1 * velY[i]! + c2 * rng.gauss();
+      }
+      // Gently move actual N toward targetN — one atom per ~10 steps so the
+      // slider feels continuous rather than juddery.
+      if (step % 6 === 0) {
+        if (sim.n < state.targetN) {
+          tryPlaceAtom(targetT);
+        } else if (sim.n > state.targetN) {
+          sim.popAtom();
+        }
+      }
+    };
+
+    // Box area — used both for the on-screen density readout and for the
+    // pressure denominator (we don't want the reservoir strips diluting it).
+    const boxArea = BOX * BOX;
+
+    return {
+      sim,
+      tick,
+      unitAnchors: anchors,
+      cMin: -80,
+      cMax: 200,
+      regions: [
+        {
+          label: "",
+          xMin: 0, yMin: 0, xMax: BOX, yMax: BOX,
+          tintByT: () => {
+            // Region tint uses the RUNNING measured T so the box glows
+            // colder/hotter as it responds to the slider, not just showing
+            // the setpoint.
+            const d = sim.diagnostics();
+            return d.temperature;
+          },
+          tintByTAlpha: 0.30,
+        },
+      ],
+      readouts: [
+        {
+          label: "setpoint",
+          v: T(() => cToT(state.targetC)),
+        },
+        {
+          label: "measured T",
+          v: T(() => sim.diagnostics().temperature),
+        },
+        {
+          label: "pressure",
+          v: R(() => sim.pressure(boxArea).toFixed(3)),
+        },
+        {
+          label: "density (marbles / area)",
+          v: R(() => (sim.n / boxArea).toFixed(3)),
+        },
+        {
+          label: "marbles",
+          v: R(() => String(sim.n)),
+        },
+      ],
+      series: [
+        { name: "T (measured)", colour: "#e07a5f", value: () => sim.diagnostics().temperature },
+        { name: "T (setpoint)", colour: "rgba(224,122,95,0.35)", value: () => cToT(state.targetC) },
+      ],
+      sliders: [
+        {
+          id: "temperature",
+          label: "temperature",
+          min: -80, max: 200, step: 1, initial: state.targetC,
+          format: (v) => `${v.toFixed(0)} °C`,
+          onChange: (v) => { state.targetC = v; },
+        },
+        {
+          id: "charge",
+          label: "charge (marbles in the box)",
+          min: 0, max: 400, step: 5, initial: state.targetN,
+          format: (v) => `${v.toFixed(0)} marbles`,
+          onChange: (v) => { state.targetN = v; },
+        },
+      ],
+      actions: [
+        {
+          id: "charge_20",
+          label: "＋ charge 20",
+          onClick: () => {
+            state.targetN = Math.min(400, state.targetN + 20);
+          },
+        },
+        {
+          id: "vacuum",
+          label: "− vacuum (all)",
+          onClick: () => {
+            state.targetN = 0;
+          },
+        },
+        {
+          id: "reseed",
+          label: "🌡 reseed at setpoint",
+          onClick: () => {
+            // Rescale velocities of all free atoms to the setpoint — useful
+            // when the user wants an instant temperature change without
+            // waiting for the Langevin to settle.
+            const t = cToT(state.targetC);
+            const sigma = Math.sqrt(Math.max(0.05, t));
+            const kind = sim.kind;
+            for (let i = 0; i < sim.n; i++) {
+              if (kind[i] !== 0) continue;
+              sim.velX[i] = sigma * rng.gauss();
+              sim.velY[i] = sigma * rng.gauss();
+            }
+          },
+        },
+      ],
+      explainer: [
+        "<p><strong>What to try:</strong></p>",
+        "<ul style='margin:4px 0 0 0;padding-left:18px'>",
+        "<li>Drop the temperature to <strong>−60 °C</strong> and watch the marbles cluster then settle into a triangular crystal — that's the Lennard-Jones potential's equilibrium spacing snapping into place.</li>",
+        "<li>Raise it to <strong>+150 °C</strong> and the same marbles spread out into a gas. Around <strong>0–30 °C</strong> you'll get a liquid — dense but disordered, sliding past itself.</li>",
+        "<li>Watch the <strong>pressure</strong> reading: below room-temp it can go negative (attractive LJ well pulling atoms in beats the kinetic term). That's what says \"liquid, not gas\".</li>",
+        "<li><strong>Vacuum</strong> the box down and pressure drops to nearly zero. <strong>Charge</strong> more marbles in and pressure climbs — the same principles an HVAC technician uses to check a refrigerant charge with a manifold gauge.</li>",
+        "</ul>",
+      ].join(""),
     };
   };
 }
@@ -1453,6 +1691,12 @@ function closedLoop(): Scenario["build"] {
 }
 
 export const SCENARIOS: Scenario[] = [
+  {
+    id: "phases",
+    name: "gas → liquid → crystal (single-box demo)",
+    blurb: "The simplest possible molecular dynamics demo: marbles alone in a closed box, thermostatted to whatever temperature you set. Drop T past the freezing point and you get a real triangular crystal (emerges from the LJ potential — no scripting). Warm it to gas. Watch the pressure change too — negative pressure at low T is real (that's the attractive well pulling atoms in). The charge / vacuum buttons let you add or remove marbles the way an HVAC technician charges a system.",
+    build: phases(),
+  },
   {
     id: "confined_lj",
     name: "confined LJ gas",

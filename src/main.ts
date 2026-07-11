@@ -5,6 +5,7 @@ import {
   regionToRenderer,
   type Readout,
   type Region,
+  type ScenarioAction,
   type ScenarioSeries,
   type ScenarioSlider,
 } from "./scenarios";
@@ -29,6 +30,8 @@ const stepBtn = document.getElementById("step") as HTMLButtonElement;
 const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 const readoutsEl = document.getElementById("readouts") as HTMLElement;
 const slidersEl = document.getElementById("sliders") as HTMLElement;
+const actionsEl = document.getElementById("actions") as HTMLElement;
+const explainerEl = document.getElementById("explainer") as HTMLElement;
 const dilationSlider = document.getElementById("dilation") as HTMLInputElement;
 const graphSection = document.getElementById("graphSection") as HTMLElement;
 const graphCanvas = document.getElementById("graphCanvas") as HTMLCanvasElement;
@@ -138,6 +141,26 @@ function load(id: string) {
     readoutEls.push(val);
   }
   renderSliders(built.sliders ?? []);
+  renderActions(built.actions ?? []);
+  const explainer = built.explainer;
+  if (explainer) {
+    explainerEl.innerHTML = explainer;
+    explainerEl.style.display = "block";
+  } else {
+    explainerEl.innerHTML = "";
+    explainerEl.style.display = "none";
+  }
+}
+
+function renderActions(actions: ScenarioAction[]) {
+  actionsEl.innerHTML = "";
+  for (const a of actions) {
+    const btn = document.createElement("button");
+    btn.textContent = a.label;
+    btn.style.cssText = "flex:1 1 auto;min-width:100px;font-size:12px;";
+    btn.addEventListener("click", () => a.onClick());
+    actionsEl.appendChild(btn);
+  }
 }
 
 function renderSliders(sliders: ScenarioSlider[]) {
