@@ -872,15 +872,17 @@ function fullHeatPump(): Scenario["build"] {
       return anchors.t1_star + m * (c - anchors.t1_celsius);
     };
     const state = {
-      // Piston speed matters for whether compression reads as adiabatic
-      // (gas heats) or isothermal (gas doesn't). Long slow strokes were
-      // nearly isothermal → no heat pumping. 0.6 is a compromise: fast
-      // enough that the gas visibly heats on the push stroke, slow enough
-      // that a cycle takes a few seconds of wall clock at 8× dilation
-      // (users can watch it).
-      pistonSpeed: 0.9,
-      condFan: 2.0,
-      evapFan: 2.0,
+      // Piston speed vs coil transfer rate is the whole game. Widening the
+      // pipes (4σ conduits + 2σ throat) means each stroke moves ~2× more
+      // mass than before, so the compressor at 0.9 was heating refrigerant
+      // faster than the coil could dump it — runaway to 1000°C. 0.4 gets
+      // the mass-flow-in balanced with heat-transfer-out. Users can crank
+      // it back up if they want to see runaway on purpose.
+      pistonSpeed: 0.4,
+      // Fans a touch stronger by default so the coil boundary layer
+      // refreshes faster, matching the higher refrigerant mass flow.
+      condFan: 3.0,
+      evapFan: 3.0,
       hotResC: 40,
       coldResC: -5,
     };
@@ -912,17 +914,28 @@ function fullHeatPump(): Scenario["build"] {
     const valveX0 = 60, valveY0 = 2, valveX1 = 98, valveY1 = 23;
     const evapX0 = 2, evapY0 = 2, evapX1 = 40, evapY1 = 23;
     // Pipe corridor centres/widths.
-    // Note on width: an atom in a 2σ pipe centre is 1.0σ from each wall,
-    // which is INSIDE the WCA cutoff (1.122σ). Both walls repel it
-    // simultaneously and it can't flow. Bumping the "wide" pipes to 3σ
-    // gives atoms a 1.5σ clearance at the centre — outside the cutoff,
-    // no wall repulsion, free flow. Expansion stays narrower as the
-    // throttle but at 2.5σ (1.25σ clearance) it's just past the cutoff,
-    // so gas passes but with the extra collisions that give the JT drop.
-    const dischargeY = 44, dischargeHW = 1.5;      // 3σ wide horizontal pipe
-    const liquidX = 79, liquidHW = 1.5;             // 3σ wide vertical pipe
-    const suctionX = 21, suctionHW = 1.5;           // 3σ wide vertical pipe
-    const expansionY = 12, expansionHW = 1.5;       // 3σ pipe; throat is where the narrowing lives (see venturi walls below)
+    //
+    // Sizing rule (learned the hard way):
+    //   centre-to-wall clearance MUST comfortably exceed the WCA cutoff
+    //   (2^(1/6)σ ≈ 1.122σ) or both walls repel the on-axis atom at once
+    //   and the "pipe" is a plug. A 3σ pipe gave 1.5σ clearance — technically
+    //   over the cutoff — but any thermal wobble put the atom back into the
+    //   repulsive zone, so the pipes still felt like chokeholds. 4σ pipes
+    //   (2σ clearance) leave 0.9σ of wobble room before either wall bites,
+    //   which is what real conduit feels like: atoms flow freely along the
+    //   axis, only the truly off-centre ones get bounced.
+    //
+    // Real heat pump lines aren't uniform either — suction is by far the
+    // biggest (low-P sparse vapour), discharge next, liquid smallest (high-P
+    // liquid is dense). We honour that ordering visually:
+    //   suction  : 4σ  (biggest — low-P vapour, sparsest flow)
+    //   discharge: 4σ
+    //   liquid   : 3.5σ (smaller — dense high-P liquid)
+    //   expansion conduit: 4σ, with the actual throttle at the venturi throat
+    const dischargeY = 44, dischargeHW = 2.0;      // 4σ wide horizontal pipe
+    const liquidX = 79, liquidHW = 1.75;            // 3.5σ wide vertical pipe (denser liquid)
+    const suctionX = 21, suctionHW = 2.0;           // 4σ wide vertical pipe (sparse vapour)
+    const expansionY = 12, expansionHW = 2.0;       // 4σ conduit; throat is where the narrowing lives (see venturi walls below)
 
     // === Compressor chamber walls ==========================================
     // Full box except the right wall has a gap for the discharge pipe, and
@@ -968,29 +981,42 @@ function fullHeatPump(): Scenario["build"] {
     // Liquid pipe (cond → valve, vertical, 2σ)
     w(liquidX - liquidHW, condY0, liquidX - liquidHW, valveY1);             // left
     w(liquidX + liquidHW, condY0, liquidX + liquidHW, valveY1);             // right
-    // Expansion pipe as a REAL venturi: 3σ pipe with a short narrow throat
-    // in the middle. A long uniform narrow slot is NOT how an expansion
-    // valve works — a real one is a point restriction (needle valve,
-    // capillary, orifice) that gas slams into and squeezes through. The
-    // throat is where the pressure drop actually happens; the rest of the
-    // pipe is just conduit. Same for the geometry: 3σ pipe with a 1σ
-    // throat 3 units long makes the throat visibly the bottleneck.
+    // Expansion pipe as a REAL venturi: 4σ conduit tapering down to a
+    // short narrow throat in the middle. A real expansion valve is a
+    // point restriction (needle valve / capillary / orifice) — a hole
+    // gas slams into and squeezes through. The pressure drop happens
+    // AT the throat; the surrounding pipe is just conduit.
+    //
+    // Throat sizing: 2σ diameter (throatHW=1.0). Centre-to-wall clearance
+    // is exactly 1.0σ — INSIDE the WCA cutoff (1.122σ), so both walls
+    // still push on a centre-line atom, giving the intended pressure
+    // drop. But it's not the death-plug the previous 1σ throat was
+    // (0.5σ from each wall, where WCA force at r⁻¹³ is astronomical).
+    // Atoms with enough kinetic energy push through; slow ones bounce
+    // back. That is exactly the throttle behaviour we want.
+    //
+    // Taper: 1-unit bevel on each side of the throat instead of a square
+    // step, so it reads as a converging-diverging nozzle rather than an
+    // abrupt shelf. Atoms funnelling in get deflected toward the axis
+    // rather than trapped in dead-corner pockets.
     const throatXMid = (valveX0 + evapX1) / 2;
-    const throatX0 = throatXMid - 1.5;   // 3 units long throat
-    const throatX1 = throatXMid + 1.5;
-    const throatHW = 0.5;                // 1σ narrow throat
-    // Top wall of expansion pipe: upstream flat → step in → throat top → step out → downstream flat
-    w(evapX1, expansionY + expansionHW, throatX0, expansionY + expansionHW);  // upstream (evap side)
-    w(throatX0, expansionY + expansionHW, throatX0, expansionY + throatHW);   // step in
-    w(throatX0, expansionY + throatHW, throatX1, expansionY + throatHW);      // throat top
-    w(throatX1, expansionY + throatHW, throatX1, expansionY + expansionHW);   // step out
-    w(throatX1, expansionY + expansionHW, valveX0, expansionY + expansionHW); // downstream (valve side)
+    const throatHalfLen = 1.0;             // 2 units long throat
+    const throatX0 = throatXMid - throatHalfLen;
+    const throatX1 = throatXMid + throatHalfLen;
+    const throatHW = 1.25;                 // 2.5σ throat (was 1σ = plug; 2σ = starved evap)
+    const bevelLen = 1.0;                  // taper length each side
+    // Top wall: evap-side flat → bevel in → throat top → bevel out → valve-side flat
+    w(evapX1, expansionY + expansionHW, throatX0 - bevelLen, expansionY + expansionHW);
+    w(throatX0 - bevelLen, expansionY + expansionHW, throatX0, expansionY + throatHW);
+    w(throatX0, expansionY + throatHW, throatX1, expansionY + throatHW);
+    w(throatX1, expansionY + throatHW, throatX1 + bevelLen, expansionY + expansionHW);
+    w(throatX1 + bevelLen, expansionY + expansionHW, valveX0, expansionY + expansionHW);
     // Bottom wall — mirror of top
-    w(evapX1, expansionY - expansionHW, throatX0, expansionY - expansionHW);
-    w(throatX0, expansionY - expansionHW, throatX0, expansionY - throatHW);
+    w(evapX1, expansionY - expansionHW, throatX0 - bevelLen, expansionY - expansionHW);
+    w(throatX0 - bevelLen, expansionY - expansionHW, throatX0, expansionY - throatHW);
     w(throatX0, expansionY - throatHW, throatX1, expansionY - throatHW);
-    w(throatX1, expansionY - throatHW, throatX1, expansionY - expansionHW);
-    w(throatX1, expansionY - expansionHW, valveX0, expansionY - expansionHW);
+    w(throatX1, expansionY - throatHW, throatX1 + bevelLen, expansionY - expansionHW);
+    w(throatX1 + bevelLen, expansionY - expansionHW, valveX0, expansionY - expansionHW);
     // Suction pipe (evap → comp, vertical, 2σ)
     w(suctionX - suctionHW, evapY1, suctionX - suctionHW, compY0);          // left
     w(suctionX + suctionHW, evapY1, suctionX + suctionHW, compY0);          // right
@@ -1120,7 +1146,13 @@ function fullHeatPump(): Scenario["build"] {
     // didn't have time to admit any gas at all; 2× gives return-and-fill
     // time to actually happen.
     const PISTON_LEFT = suctionX + suctionHW + 1;
-    const PISTON_RIGHT = compX1 - 3;
+    // Shorter stroke than "as far right as possible": mass-per-cycle scales
+    // linearly with stroke length. The wider pipes (4σ) already move much
+    // more gas per stroke than the old 3σ pipes did, and the coil transfer
+    // rate is finite, so a bigger stroke just heats refrigerant faster than
+    // the coil can dump it. 8σ stroke is enough to see the piston motion
+    // clearly without overwhelming the downstream cooling.
+    const PISTON_RIGHT = PISTON_LEFT + 8;
     const PISTON_RETURN_FACTOR = 2.5;
     const piston = new MovingSegment({
       ax: PISTON_LEFT, ay: compY0, bx: PISTON_LEFT, by: compY1,
