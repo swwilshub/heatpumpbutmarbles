@@ -68,7 +68,15 @@ export type PartSchematic =
   // → condenser → valve → evaporator → compressor) so the whole thing reads
   // as a heat-pump diagram even though the sub-chambers are physically
   // isolated. Line + arrowhead + label; no physics.
-  | { kind: "pipe"; x1: number; y1: number; x2: number; y2: number; label?: string; colour?: string };
+  | { kind: "pipe"; x1: number; y1: number; x2: number; y2: number; label?: string; colour?: string }
+  // Reservoir hint: dashed fingers extending outward from the outer wall of a
+  // reservoir, capped with an ∞ symbol. Signals visually that the finite box
+  // is standing in for the great outdoors (or the whole room) — the wall is
+  // just a modelling convenience, not the actual boundary of "outside".
+  //   x, y = middle of the outer wall (world coords)
+  //   direction = -1 (extend left, e.g. outdoor) or +1 (extend right, indoor)
+  //   span = height of the wall (world units)
+  | { kind: "reservoir"; x: number; y: number; direction: -1 | 1; span: number; label?: string };
 
 export interface RenderOptions {
   atomRadius: number;
@@ -341,6 +349,45 @@ export class CanvasRenderer {
         case "label":
           drawTag(ctx, p.label, px, py, "#c7cdd6");
           break;
+        case "reservoir": {
+          // Dashed radial fingers stepping OUTWARD from the outer wall in
+          // `direction`, fading with distance and capped by an ∞ glyph.
+          // Reads as "the box ends here but the outdoors doesn't".
+          const dir = p.direction;
+          const spanPx = p.span * scale;
+          const nFingers = 6;
+          const fingerLenPx = 22;
+          for (let k = 0; k < nFingers; k++) {
+            const yRow = py - spanPx / 2 + (spanPx / nFingers) * (k + 0.5);
+            const dashes = 3;
+            const step = fingerLenPx / dashes;
+            for (let s = 0; s < dashes; s++) {
+              const alpha = 0.55 * (1 - s / dashes);
+              const x0 = px + dir * (4 + s * step);
+              const x1 = px + dir * (4 + (s + 1) * step - 2);
+              ctx.strokeStyle = `rgba(180,200,220,${alpha.toFixed(2)})`;
+              ctx.lineWidth = 1.4;
+              ctx.beginPath();
+              ctx.moveTo(x0, yRow);
+              ctx.lineTo(x1, yRow);
+              ctx.stroke();
+            }
+          }
+          const infX = px + dir * (fingerLenPx + 10);
+          ctx.font = "600 18px system-ui, sans-serif";
+          ctx.fillStyle = "rgba(200,215,230,0.85)";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("∞", infX, py);
+          if (p.label) {
+            ctx.font = "500 9px system-ui, sans-serif";
+            ctx.fillStyle = "rgba(180,200,220,0.7)";
+            ctx.fillText(p.label, infX, py + 15);
+          }
+          ctx.textAlign = "start";
+          ctx.textBaseline = "middle";
+          break;
+        }
       }
     }
     // Suppress unused-var warning on `scale` — retained for future icon sizing.

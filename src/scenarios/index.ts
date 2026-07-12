@@ -887,11 +887,11 @@ function fullHeatPump(): Scenario["build"] {
     // Domain covers all four sub-chambers plus reservoir tint strips and
     // pipe drawing space.
     const sim = new Simulation({
-      domain: { xMin: -10, yMin: -3, xMax: 108, yMax: 58 },
+      domain: { xMin: -30, yMin: -3, xMax: 128, yMax: 58 },
       potential: { kind: "lj", epsilon: 1, sigma: 1, rCut: 2.5 },
       segments: [],
       dt: 0.004,
-      capacity: 3200,
+      capacity: 4000,
     });
     sim.setRng(new Rng(21));
 
@@ -922,7 +922,7 @@ function fullHeatPump(): Scenario["build"] {
     const dischargeY = 44, dischargeHW = 1.5;      // 3σ wide horizontal pipe
     const liquidX = 79, liquidHW = 1.5;             // 3σ wide vertical pipe
     const suctionX = 21, suctionHW = 1.5;           // 3σ wide vertical pipe
-    const expansionY = 12, expansionHW = 1.25;      // 2.5σ NARROW pipe — the Joule-Thomson throttle
+    const expansionY = 12, expansionHW = 1.5;       // 3σ pipe; throat is where the narrowing lives (see venturi walls below)
 
     // === Compressor chamber walls ==========================================
     // Full box except the right wall has a gap for the discharge pipe, and
@@ -968,22 +968,48 @@ function fullHeatPump(): Scenario["build"] {
     // Liquid pipe (cond → valve, vertical, 2σ)
     w(liquidX - liquidHW, condY0, liquidX - liquidHW, valveY1);             // left
     w(liquidX + liquidHW, condY0, liquidX + liquidHW, valveY1);             // right
-    // Expansion pipe (valve → evap, horizontal, NARROW 1.2σ) — the Joule-Thomson throttle
-    w(valveX0, expansionY + expansionHW, evapX1, expansionY + expansionHW); // top
-    w(valveX0, expansionY - expansionHW, evapX1, expansionY - expansionHW); // bottom
+    // Expansion pipe as a REAL venturi: 3σ pipe with a short narrow throat
+    // in the middle. A long uniform narrow slot is NOT how an expansion
+    // valve works — a real one is a point restriction (needle valve,
+    // capillary, orifice) that gas slams into and squeezes through. The
+    // throat is where the pressure drop actually happens; the rest of the
+    // pipe is just conduit. Same for the geometry: 3σ pipe with a 1σ
+    // throat 3 units long makes the throat visibly the bottleneck.
+    const throatXMid = (valveX0 + evapX1) / 2;
+    const throatX0 = throatXMid - 1.5;   // 3 units long throat
+    const throatX1 = throatXMid + 1.5;
+    const throatHW = 0.5;                // 1σ narrow throat
+    // Top wall of expansion pipe: upstream flat → step in → throat top → step out → downstream flat
+    w(evapX1, expansionY + expansionHW, throatX0, expansionY + expansionHW);  // upstream (evap side)
+    w(throatX0, expansionY + expansionHW, throatX0, expansionY + throatHW);   // step in
+    w(throatX0, expansionY + throatHW, throatX1, expansionY + throatHW);      // throat top
+    w(throatX1, expansionY + throatHW, throatX1, expansionY + expansionHW);   // step out
+    w(throatX1, expansionY + expansionHW, valveX0, expansionY + expansionHW); // downstream (valve side)
+    // Bottom wall — mirror of top
+    w(evapX1, expansionY - expansionHW, throatX0, expansionY - expansionHW);
+    w(throatX0, expansionY - expansionHW, throatX0, expansionY - throatHW);
+    w(throatX0, expansionY - throatHW, throatX1, expansionY - throatHW);
+    w(throatX1, expansionY - throatHW, throatX1, expansionY - expansionHW);
+    w(throatX1, expansionY - expansionHW, valveX0, expansionY - expansionHW);
     // Suction pipe (evap → comp, vertical, 2σ)
     w(suctionX - suctionHW, evapY1, suctionX - suctionHW, compY0);          // left
     w(suctionX + suctionHW, evapY1, suctionX + suctionHW, compY0);          // right
 
     // === Outer walls for the two exterior reservoirs =======================
+    // Reservoirs are ~3× wider now (24 units vs 8–10 before) so the
+    // "outdoor" and "indoor air" spaces read as substantial — a proper stand-in
+    // for the great outdoors / room, not a token sliver next to the coil. The
+    // dashed ∞ hint drawn outside each reservoir (see the parts list below)
+    // makes the intent explicit: this box represents an effectively infinite
+    // thermal reservoir at the set-point temperature.
     // Indoor reservoir (right of condenser)
-    const indoorX0 = condX1, indoorX1 = 106;
+    const indoorX0 = condX1, indoorX1 = 122;
     const indoorY0 = condY0, indoorY1 = condY1;
     w(indoorX1, indoorY0, indoorX1, indoorY1);                              // right outer
     w(indoorX1, indoorY0, indoorX0, indoorY0);                              // bottom outer
     w(indoorX0, indoorY1, indoorX1, indoorY1);                              // top outer
     // Outdoor reservoir (left of evaporator)
-    const outdoorX0 = -8, outdoorX1 = evapX0;
+    const outdoorX0 = -22, outdoorX1 = evapX0;
     const outdoorY0 = evapY0, outdoorY1 = evapY1;
     w(outdoorX0, outdoorY0, outdoorX0, outdoorY1);                          // left outer
     w(outdoorX0, outdoorY0, outdoorX1, outdoorY0);                          // bottom outer
@@ -1334,9 +1360,22 @@ function fullHeatPump(): Scenario["build"] {
         // Coil labels
         { kind: "coil", x: condX1 - 1, y: condY1 - 0.6, label: "coil" },
         { kind: "coil", x: evapX0 + 1, y: evapY1 - 0.6, label: "coil" },
-        // Reservoir labels
-        { kind: "label", x: (indoorX0 + indoorX1) / 2, y: indoorY1 + 1.2, label: "indoor air" },
-        { kind: "label", x: (outdoorX0 + outdoorX1) / 2, y: outdoorY1 + 1.2, label: "outdoor air" },
+        // Reservoir labels — "(∞)" flag says the box is a stand-in for open air.
+        { kind: "label", x: (indoorX0 + indoorX1) / 2, y: indoorY1 + 1.2, label: "indoor air (∞)" },
+        { kind: "label", x: (outdoorX0 + outdoorX1) / 2, y: outdoorY1 + 1.2, label: "outdoor air (∞)" },
+        // Infinity hints — dashed fingers + ∞ glyph outside each outer wall.
+        {
+          kind: "reservoir",
+          x: indoorX1, y: (indoorY0 + indoorY1) / 2,
+          direction: 1, span: indoorY1 - indoorY0,
+          label: "the room",
+        },
+        {
+          kind: "reservoir",
+          x: outdoorX0, y: (outdoorY0 + outdoorY1) / 2,
+          direction: -1, span: outdoorY1 - outdoorY0,
+          label: "the outdoors",
+        },
         // Fans over the reservoirs (γ)
         {
           kind: "fan",
