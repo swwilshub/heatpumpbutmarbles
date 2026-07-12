@@ -1,4 +1,4 @@
-import { Simulation, ThermostatGroup, rescaleToTemperature } from "../sim/simulation";
+import { Simulation, ThermostatGroup, RegionThermostat, rescaleToTemperature } from "../sim/simulation";
 import { seedLattice } from "../sim/init";
 import { Rng } from "../sim/rng";
 import { addHeatExchanger } from "../sim/heatExchanger";
@@ -885,6 +885,10 @@ function fullHeatPump(): Scenario["build"] {
       evapFan: 3.0,
       hotResC: 40,
       coldResC: -5,
+      // Latent-heat proxy target for the cold side (see the "Phase-change
+      // proxy" section below). Well below outdoor -5°C so refrigerant is
+      // colder than the outdoor coil and heat flows the right way.
+      boilC: -30,
     };
     // Domain covers all four sub-chambers plus reservoir tint strips and
     // pipe drawing space.
@@ -1120,6 +1124,41 @@ function fullHeatPump(): Scenario["build"] {
     sim.thermostats.push(condTherm);
     sim.thermostats.push(evapTherm);
 
+    // === Phase-change proxy for the cold side ==============================
+    // Without this the cycle can't actually pump heat. Here's the physics
+    // gap our monatomic LJ marbles can't cover:
+    //
+    // A real refrigerant (propane, R32, etc.) at these pressures is a
+    // two-phase mixture. Across the expansion valve, some liquid
+    // flash-vaporises; the latent heat of vaporisation is drawn from the
+    // remaining liquid, so gas emerging on the low-P side is COLD (colder
+    // than the outdoor coil — heat now flows INTO refrigerant). That's
+    // the Joule-Thomson cooling that makes a heat pump work.
+    //
+    // Monatomic LJ has no phase change. Expansion through a static
+    // constriction doesn't cool the gas at all — refrigerant enters the
+    // evaporator at whatever T it left the condenser, and if that's
+    // warmer than the outdoor coil (it always is), heat flows the WRONG
+    // way and the cycle silently reverses.
+    //
+    // We stand in for the missing physics with ONE region thermostat: a
+    // cold "boiling sink" over the evaporator that holds refrigerant at
+    // the boiling target while the outdoor coil pours heat in. The
+    // Langevin energy this thermostat absorbs represents the latent heat
+    // real refrigerant vaporisation would absorb.
+    //
+    // We deliberately do NOT add a symmetric "condensing source" in the
+    // condenser — the compressor already produces refrigerant much hotter
+    // than the condensing target, so a warm-side sink would just soak up
+    // piston work as fake latent heat and starve the coil. Let the real
+    // coil handle the hot side; it works fine when refrigerant is hot
+    // enough.
+    const evapBoilSink = new RegionThermostat(
+      { xMin: evapX0, yMin: evapY0, xMax: evapX1, yMax: evapY1 },
+      cToT(state.boilC), 1.5,
+    );
+    sim.thermostats.push(evapBoilSink);
+
     // === Compressor piston + check valves ==================================
     // Piston sits inside the compressor chamber. On its ACTIVE rightward
     // stroke it drives gas out through the discharge pipe; on the ghost
@@ -1283,9 +1322,28 @@ function fullHeatPump(): Scenario["build"] {
         },
       ],
       readouts: [
+        // Per-chamber refrigerant T so the T split around the cycle is
+        // legible — this is the actual proof the heat pump is working.
+        // Real numbers you should expect at steady state:
+        //   comp  ≳ evap+~10°C  (suction picks up heat on the way in)
+        //   cond  ≳ comp+~30°C  (compression heats gas hard)
+        //   valve ≳ indoor       (condensed liquid at coil T)
+        //   evap  = boilC target (held cold by the boiling proxy)
         {
-          label: "refrigerant T",
-          v: T(() => sim.temperatureOf(refIdx)),
+          label: "T after compressor (hot)",
+          v: T(() => meanTInBox(sim, compX0, compY0, compX1, compY1)),
+        },
+        {
+          label: "T in condenser",
+          v: T(() => meanTInBox(sim, condX0, condY0, condX1, condY1)),
+        },
+        {
+          label: "T in valve chamber",
+          v: T(() => meanTInBox(sim, valveX0, valveY0, valveX1, valveY1)),
+        },
+        {
+          label: "T after throat (cold)",
+          v: T(() => meanTInBox(sim, evapX0, evapY0, evapX1, evapY1)),
         },
         {
           label: "hot coil (indoors)",
@@ -1329,9 +1387,10 @@ function fullHeatPump(): Scenario["build"] {
         },
       ],
       series: [
-        { name: "refrigerant", colour: "#f0c060", value: () => sim.temperatureOf(refIdx) },
-        { name: "hot coil", colour: "#e07a5f", value: () => sim.temperatureOf(condHx.atomIndices) },
-        { name: "cold coil", colour: "#5f8fb8", value: () => sim.temperatureOf(evapHx.atomIndices) },
+        // Show the T split around the cycle: hot side (condenser) vs cold
+        // side (evaporator), with the two air reservoirs for reference.
+        { name: "cond (hot)", colour: "#e07a5f", value: () => meanTInBox(sim, condX0, condY0, condX1, condY1) },
+        { name: "evap (cold)", colour: "#5f8fb8", value: () => meanTInBox(sim, evapX0, evapY0, evapX1, evapY1) },
         { name: "indoor air", colour: "rgba(224,122,95,0.5)", value: () => sim.temperatureOf(indoorIdx) },
         { name: "outdoor air", colour: "rgba(95,143,184,0.5)", value: () => sim.temperatureOf(outdoorIdx) },
       ],
@@ -1375,6 +1434,13 @@ function fullHeatPump(): Scenario["build"] {
           min: -25, max: 25, step: 1, initial: state.coldResC,
           format: (v) => `${v.toFixed(0)} °C`,
           onChange: (v) => { state.coldResC = v; evapTherm.targetT = cToT(v); },
+        },
+        {
+          id: "boilC",
+          label: "boiling T (°C)",
+          min: -60, max: -5, step: 1, initial: state.boilC,
+          format: (v) => `${v.toFixed(0)} °C`,
+          onChange: (v) => { state.boilC = v; evapBoilSink.targetT = cToT(v); },
         },
       ],
       parts: [
@@ -1810,7 +1876,7 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "full_heat_pump",
     name: "full heat pump — real connected loop",
-    blurb: "All four heat-pump stages connected by real narrow pipes atoms actually flow through. Compressor's one-way active-stroke piston drives gas out the discharge line, around through the condenser (where it dumps heat to the indoor air marbles), down the liquid line, through the NARROW ~1σ expansion throat (real Joule-Thomson cooling), into the evaporator (absorbing heat from outdoor air marbles), and back via the suction line. Fans control Langevin coupling on the indoor and outdoor air marbles — turn a fan down and the air layer against its coil stagnates, exactly as a real coil starves when airflow drops.",
+    blurb: "All four heat-pump stages connected by real narrow pipes atoms actually flow through. The compressor piston drives gas out through the discharge line, around through the condenser (hot side — dumps heat to the indoor air), down the liquid line, through the venturi throat (throttle — pressure and T drop), into the evaporator (cold side — pulls heat from the outdoor air), and back via the suction line. Because monatomic LJ marbles have no phase change, expansion through the throat wouldn't actually cool the gas, so a cold Langevin sink in the evaporator stands in for the vaporisation latent heat that real refrigerants use to reach below-outdoor temperatures (boiling T slider). The hot side is left to the real coil — compressor gas is already hot enough on its own.",
     build: fullHeatPump(),
   },
   {
