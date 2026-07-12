@@ -878,7 +878,7 @@ function fullHeatPump(): Scenario["build"] {
       // enough that the gas visibly heats on the push stroke, slow enough
       // that a cycle takes a few seconds of wall clock at 8× dilation
       // (users can watch it).
-      pistonSpeed: 0.6,
+      pistonSpeed: 0.9,
       condFan: 2.0,
       evapFan: 2.0,
       hotResC: 40,
@@ -887,11 +887,11 @@ function fullHeatPump(): Scenario["build"] {
     // Domain covers all four sub-chambers plus reservoir tint strips and
     // pipe drawing space.
     const sim = new Simulation({
-      domain: { xMin: -6, yMin: -4, xMax: 66, yMax: 38 },
+      domain: { xMin: -10, yMin: -3, xMax: 108, yMax: 58 },
       potential: { kind: "lj", epsilon: 1, sigma: 1, rCut: 2.5 },
       segments: [],
       dt: 0.004,
-      capacity: 2000,
+      capacity: 3200,
     });
     sim.setRng(new Rng(21));
 
@@ -904,10 +904,13 @@ function fullHeatPump(): Scenario["build"] {
     //   Evap (bot-left)   Valve (bot-right)
     // Flow: comp → discharge (right) → cond → liquid (down) → valve
     //     → expansion (left) → evap → suction (up) → comp
-    const compX0 = 2, compY0 = 20, compX1 = 24, compY1 = 32;
-    const condX0 = 36, condY0 = 20, condX1 = 58, condY1 = 32;
-    const valveX0 = 36, valveY0 = 2, valveX1 = 58, valveY1 = 14;
-    const evapX0 = 2, evapY0 = 2, evapX1 = 24, evapY1 = 14;
+    // Scaled up ~1.7× from the original 22×12 chambers so there's room
+    // for a longer piston stroke, more atoms per chamber (~200 vs ~40),
+    // and more visually obvious flow through the pipes.
+    const compX0 = 2, compY0 = 34, compX1 = 40, compY1 = 55;
+    const condX0 = 60, condY0 = 34, condX1 = 98, condY1 = 55;
+    const valveX0 = 60, valveY0 = 2, valveX1 = 98, valveY1 = 23;
+    const evapX0 = 2, evapY0 = 2, evapX1 = 40, evapY1 = 23;
     // Pipe corridor centres/widths.
     // Note on width: an atom in a 2σ pipe centre is 1.0σ from each wall,
     // which is INSIDE the WCA cutoff (1.122σ). Both walls repel it
@@ -916,10 +919,10 @@ function fullHeatPump(): Scenario["build"] {
     // no wall repulsion, free flow. Expansion stays narrower as the
     // throttle but at 2.5σ (1.25σ clearance) it's just past the cutoff,
     // so gas passes but with the extra collisions that give the JT drop.
-    const dischargeY = 26, dischargeHW = 1.5;     // 3σ wide horizontal pipe
-    const liquidX = 47, liquidHW = 1.5;            // 3σ wide vertical pipe
-    const suctionX = 13, suctionHW = 1.5;          // 3σ wide vertical pipe
-    const expansionY = 8, expansionHW = 1.25;      // 2.5σ NARROW pipe — the Joule-Thomson throttle
+    const dischargeY = 44, dischargeHW = 1.5;      // 3σ wide horizontal pipe
+    const liquidX = 79, liquidHW = 1.5;             // 3σ wide vertical pipe
+    const suctionX = 21, suctionHW = 1.5;           // 3σ wide vertical pipe
+    const expansionY = 12, expansionHW = 1.25;      // 2.5σ NARROW pipe — the Joule-Thomson throttle
 
     // === Compressor chamber walls ==========================================
     // Full box except the right wall has a gap for the discharge pipe, and
@@ -974,13 +977,13 @@ function fullHeatPump(): Scenario["build"] {
 
     // === Outer walls for the two exterior reservoirs =======================
     // Indoor reservoir (right of condenser)
-    const indoorX0 = condX1, indoorX1 = 62;
+    const indoorX0 = condX1, indoorX1 = 106;
     const indoorY0 = condY0, indoorY1 = condY1;
     w(indoorX1, indoorY0, indoorX1, indoorY1);                              // right outer
     w(indoorX1, indoorY0, indoorX0, indoorY0);                              // bottom outer
     w(indoorX0, indoorY1, indoorX1, indoorY1);                              // top outer
     // Outdoor reservoir (left of evaporator)
-    const outdoorX0 = -4, outdoorX1 = evapX0;
+    const outdoorX0 = -8, outdoorX1 = evapX0;
     const outdoorY0 = evapY0, outdoorY1 = evapY1;
     w(outdoorX0, outdoorY0, outdoorX0, outdoorY1);                          // left outer
     w(outdoorX0, outdoorY0, outdoorX1, outdoorY0);                          // bottom outer
