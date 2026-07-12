@@ -872,13 +872,13 @@ function fullHeatPump(): Scenario["build"] {
       return anchors.t1_star + m * (c - anchors.t1_celsius);
     };
     const state = {
-      // Piston speed vs coil transfer rate is the whole game. Widening the
-      // pipes (4σ conduits + 2σ throat) means each stroke moves ~2× more
-      // mass than before, so the compressor at 0.9 was heating refrigerant
-      // faster than the coil could dump it — runaway to 1000°C. 0.4 gets
-      // the mass-flow-in balanced with heat-transfer-out. Users can crank
-      // it back up if they want to see runaway on purpose.
-      pistonSpeed: 0.4,
+      // Piston speed vs coil transfer rate is the whole game. Wider pipes
+      // (4σ) + longer stroke (18σ, sweeping most of the chamber) mean each
+      // push moves several times more mass than the original 8σ stroke, so
+      // 0.4 was cooking refrigerant to 1000°C+ — more work-per-cycle than
+      // the coil could dissipate. 0.2 rebalances against the wider mass
+      // flow. Users can crank it back up on the slider to see runaway.
+      pistonSpeed: 0.2,
       // Fans a touch stronger by default so the coil boundary layer
       // refreshes faster, matching the higher refrigerant mass flow.
       condFan: 3.0,
@@ -938,7 +938,16 @@ function fullHeatPump(): Scenario["build"] {
     //   expansion conduit: 4σ, with the actual throttle at the venturi throat
     const dischargeY = 44, dischargeHW = 2.0;      // 4σ wide horizontal pipe
     const liquidX = 79, liquidHW = 1.75;            // 3.5σ wide vertical pipe (denser liquid)
-    const suctionX = 21, suctionHW = 2.0;           // 4σ wide vertical pipe (sparse vapour)
+    // Suction port position matters: it must sit IN FRONT of the piston (in
+    // the piston's rightward sweep zone) so cold gas from the evaporator
+    // enters where the piston will actually push it out through discharge.
+    // With the port BEHIND the piston (old suctionX=21, PISTON_LEFT=24),
+    // cold gas floods the back-clearance region during return, stays there
+    // through the push, and the piston keeps re-compressing the same trapped
+    // hot gas cycle after cycle — the compressor runs 500-800°C from the
+    // very atoms it should have swept away. Moving suctionX right of the
+    // piston start position fixes that.
+    const suctionX = 29, suctionHW = 2.0;           // 4σ port at x=27-31, UNDER the piston sweep zone
     const expansionY = 12, expansionHW = 2.0;       // 4σ conduit; throat is where the narrowing lives (see venturi walls below)
 
     // === Compressor chamber walls ==========================================
@@ -1053,12 +1062,13 @@ function fullHeatPump(): Scenario["build"] {
     const addToRef = (start: number) => {
       for (let i = start; i < sim.n; i++) refIdx.push(i);
     };
-    // Compressor chamber — seed the RIGHT side (in the piston's swept
-    // zone), leaving the piston-startup region + suction gap contact
-    // clear so nothing is inside a moving segment's cutoff at t=0.
+    // Compressor chamber — seed the piston's swept zone plus the region
+    // in front of it, leaving the piston's initial-position contact zone
+    // clear (nothing within its WCA cutoff at t=0). Uses the same
+    // compX0+6 formula that defines PISTON_LEFT below.
     let first = sim.n;
     seedLattice(sim, {
-      xMin: suctionX + suctionHW + 3, yMin: compY0 + 1,
+      xMin: compX0 + 6 + 2, yMin: compY0 + 1,
       xMax: compX1 - 1, yMax: compY1 - 1,
     }, 1.35, 1.0, new Rng(101));
     addToRef(first);
@@ -1184,15 +1194,21 @@ function fullHeatPump(): Scenario["build"] {
     // Return-stroke speed: 2.5× the push speed. 6× was so fast the pipes
     // didn't have time to admit any gas at all; 2× gives return-and-fill
     // time to actually happen.
-    const PISTON_LEFT = suctionX + suctionHW + 1;
-    // Shorter stroke than "as far right as possible": mass-per-cycle scales
-    // linearly with stroke length. The wider pipes (4σ) already move much
-    // more gas per stroke than the old 3σ pipes did, and the coil transfer
-    // rate is finite, so a bigger stroke just heats refrigerant faster than
-    // the coil can dump it. 8σ stroke is enough to see the piston motion
-    // clearly without overwhelming the downstream cooling.
-    const PISTON_RIGHT = PISTON_LEFT + 8;
-    const PISTON_RETURN_FACTOR = 2.5;
+    // Piston layout: starts at the left of the compressor, sweeps rightward
+    // TOWARD the suction port and discharge. Cold gas that entered through
+    // suction during the previous return sits between PISTON_RIGHT and the
+    // discharge port, so the push sweeps that cold gas out through discharge
+    // — exactly like a real reciprocating compressor. Old layout had the
+    // suction port BEHIND the piston, so cold gas stayed trapped behind
+    // and the compressor kept re-compressing the same hot residual gas
+    // instead of moving cool suction gas through the cycle.
+    const PISTON_LEFT = compX0 + 6;                 // 6σ back-clearance from left wall
+    const PISTON_RIGHT = suctionX - suctionHW - 1;  // stop just short of the suction port
+    // Return factor 2.5 was too fast — return only got ~30% of the cycle,
+    // not enough time for suction to refill the chamber. 1.0 gives return
+    // the same duration as push (50/50 split), so a full cycle is one push
+    // period + one refill period rather than a rushed refill.
+    const PISTON_RETURN_FACTOR = 1.0;
     const piston = new MovingSegment({
       ax: PISTON_LEFT, ay: compY0, bx: PISTON_LEFT, by: compY1,
       vax: 0, vay: 0, vbx: 0, vby: 0,
