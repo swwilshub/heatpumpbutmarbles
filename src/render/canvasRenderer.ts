@@ -76,7 +76,34 @@ export type PartSchematic =
   //   x, y = middle of the outer wall (world coords)
   //   direction = -1 (extend left, e.g. outdoor) or +1 (extend right, indoor)
   //   span = height of the wall (world units)
-  | { kind: "reservoir"; x: number; y: number; direction: -1 | 1; span: number; label?: string };
+  | { kind: "reservoir"; x: number; y: number; direction: -1 | 1; span: number; label?: string }
+  // Analog HVAC gauge: circular dial with a needle showing pressure. Blue
+  // for low side (suction), red for high side (discharge). value() reads
+  // current P (any units — needle is scaled by min/max). label appears
+  // under the dial with the current numeric reading.
+  | {
+      kind: "gauge";
+      x: number;
+      y: number;
+      radius: number;
+      value: () => number;
+      min: number;
+      max: number;
+      colour: "blue" | "red";
+      label: string;
+    }
+  // On/off indicator light for HVAC service actions (vacuum pump running,
+  // leak simulated, etc). Small filled circle with a text label. Colour
+  // shifts when active.
+  | {
+      kind: "indicator";
+      x: number;
+      y: number;
+      active: () => boolean;
+      label: string;
+      colourOn: string;
+      colourOff: string;
+    };
 
 export interface RenderOptions {
   atomRadius: number;
@@ -349,6 +376,85 @@ export class CanvasRenderer {
         case "label":
           drawTag(ctx, p.label, px, py, "#c7cdd6");
           break;
+        case "gauge": {
+          const r = Math.max(20, p.radius * scale);
+          const face = p.colour === "red" ? "#e07a5f" : "#5f8fb8";
+          // Dial background
+          ctx.beginPath();
+          ctx.arc(px, py, r, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(11,13,18,0.85)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(200,210,220,0.6)";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          // Tick marks — 5 major ticks across a 240° arc (from -210° to 30°)
+          const start = Math.PI * (1 + 30 / 180); // 210° from +x (bottom-left)
+          const arc = Math.PI * (240 / 180);
+          for (let k = 0; k <= 5; k++) {
+            const t = k / 5;
+            const a = start + t * arc;
+            const ix = px + Math.cos(a) * (r - 5);
+            const iy = py + Math.sin(a) * (r - 5);
+            const ox = px + Math.cos(a) * (r - 1);
+            const oy = py + Math.sin(a) * (r - 1);
+            ctx.strokeStyle = "rgba(200,210,220,0.5)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(ix, iy);
+            ctx.lineTo(ox, oy);
+            ctx.stroke();
+          }
+          // Needle position: clamp value to [min, max], map to arc.
+          const v = p.value();
+          const t = Math.max(0, Math.min(1, (v - p.min) / Math.max(1e-6, p.max - p.min)));
+          const angle = start + t * arc;
+          ctx.strokeStyle = face;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(px + Math.cos(angle) * (r - 6), py + Math.sin(angle) * (r - 6));
+          ctx.stroke();
+          // Centre hub
+          ctx.beginPath();
+          ctx.arc(px, py, 3, 0, Math.PI * 2);
+          ctx.fillStyle = face;
+          ctx.fill();
+          // Numeric read + label below dial
+          ctx.font = "600 10px system-ui, sans-serif";
+          ctx.fillStyle = face;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(v.toFixed(2), px, py + r + 3);
+          ctx.font = "500 9px system-ui, sans-serif";
+          ctx.fillStyle = "rgba(200,210,220,0.75)";
+          ctx.fillText(p.label, px, py + r + 15);
+          ctx.textAlign = "start";
+          ctx.textBaseline = "middle";
+          break;
+        }
+        case "indicator": {
+          const on = p.active();
+          const col = on ? p.colourOn : p.colourOff;
+          const dotR = 5;
+          ctx.beginPath();
+          ctx.arc(px, py, dotR, 0, Math.PI * 2);
+          ctx.fillStyle = col;
+          ctx.fill();
+          if (on) {
+            // Glow when active
+            ctx.strokeStyle = col;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(px, py, dotR + 3, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          ctx.font = "500 10px system-ui, sans-serif";
+          ctx.fillStyle = on ? col : "rgba(200,210,220,0.55)";
+          ctx.textBaseline = "middle";
+          ctx.textAlign = "start";
+          ctx.fillText(p.label, px + dotR + 6, py);
+          break;
+        }
         case "reservoir": {
           // Dashed radial fingers stepping OUTWARD from the outer wall in
           // `direction`, fading with distance and capped by an ∞ glyph.

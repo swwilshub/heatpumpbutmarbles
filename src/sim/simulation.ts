@@ -280,6 +280,66 @@ export class Simulation {
     this.n--;
   }
 
+  // Remove the atom at `idx` by swapping the last-atom's fields into that
+  // slot and decrementing n. Safe when the sim uses only position-based
+  // thermostats (RegionThermostat) — an old-style ThermostatGroup whose
+  // indices reference either idx or n-1 will become invalid, so callers
+  // must not use this method when index-based groups are live.
+  removeAtomAt(idx: number): void {
+    if (idx < 0 || idx >= this.n) return;
+    const last = this.n - 1;
+    if (idx !== last) {
+      this.posX[idx] = this.posX[last]!;
+      this.posY[idx] = this.posY[last]!;
+      this.velX[idx] = this.velX[last]!;
+      this.velY[idx] = this.velY[last]!;
+      this.accX[idx] = this.accX[last]!;
+      this.accY[idx] = this.accY[last]!;
+      this.homeX[idx] = this.homeX[last]!;
+      this.homeY[idx] = this.homeY[last]!;
+      this.tetherK[idx] = this.tetherK[last]!;
+      this.kind[idx] = this.kind[last]!;
+      this.smoothedV2[idx] = this.smoothedV2[last]!;
+    }
+    this.n--;
+  }
+
+  // Find one free (kind=0) atom whose position is inside the given box, or
+  // return -1 if none. Used by HVAC service actions (leaks, vacuum) to pick
+  // which atom to remove from a specific region.
+  findFreeAtomInBox(
+    xMin: number, yMin: number, xMax: number, yMax: number
+  ): number {
+    const posX = this.posX;
+    const posY = this.posY;
+    const kind = this.kind;
+    for (let i = 0; i < this.n; i++) {
+      if (kind[i] !== 0) continue;
+      const x = posX[i]!;
+      const y = posY[i]!;
+      if (x >= xMin && x <= xMax && y >= yMin && y <= yMax) return i;
+    }
+    return -1;
+  }
+
+  // Count free (kind=0) atoms in a box — used for per-region pressure
+  // and refrigerant-charge readouts.
+  countFreeAtomsInBox(
+    xMin: number, yMin: number, xMax: number, yMax: number
+  ): number {
+    const posX = this.posX;
+    const posY = this.posY;
+    const kind = this.kind;
+    let count = 0;
+    for (let i = 0; i < this.n; i++) {
+      if (kind[i] !== 0) continue;
+      const x = posX[i]!;
+      const y = posY[i]!;
+      if (x >= xMin && x <= xMax && y >= yMin && y <= yMax) count++;
+    }
+    return count;
+  }
+
   // velocity Verlet (kick-drift-kick) + Langevin thermostat step after kick.
   // Tethered atoms follow the same Verlet loop but their pinning force is
   // added by computeForces() so they can't drift off their lattice sites.

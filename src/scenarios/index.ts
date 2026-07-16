@@ -889,6 +889,17 @@ function fullHeatPump(): Scenario["build"] {
       // proxy" section below). Well below outdoor -5°C so refrigerant is
       // colder than the outdoor coil and heat flows the right way.
       boilC: -30,
+      // === HVAC service state ================================================
+      // vacuumOn: run a vacuum pump — pulls refrigerant OUT of the system
+      //   at a fixed rate per step (representing a two-stage rotary vane pump
+      //   drawing the low side down to near zero).
+      // leakOn: continuous slow refrigerant loss at a "leak point" on the
+      //   discharge line (worst place for a real refrigerant leak — highest
+      //   pressure so refrigerant escapes fastest).
+      // Track refrigerant "charge" as atom count. 1 atom ≈ 1 g of refrigerant
+      // (arbitrary but keeps the readout in a familiar unit).
+      vacuumOn: false,
+      leakOn: false,
     };
     // Domain covers all four sub-chambers plus reservoir tint strips and
     // pipe drawing space.
@@ -1115,22 +1126,26 @@ function fullHeatPump(): Scenario["build"] {
     // to these reservoir atoms — that's what the fan represents. Fan off →
     // Langevin γ ↓ → boundary layer against the coil can't be refreshed →
     // stagnation → same failure mode as a real coil losing airflow.
-    const indoorIdx: number[] = [];
-    first = sim.n;
+    // Indoor & outdoor air atoms seeded into the reservoirs. Thermostats
+    // use RegionThermostat (position-based) rather than fixed indices so
+    // atoms getting added/removed later (HVAC charge / vacuum / leak
+    // actions) don't invalidate the index lists.
     seedLattice(sim, {
       xMin: indoorX0 + 1.0, yMin: indoorY0 + 0.6,
       xMax: indoorX1 - 0.5, yMax: indoorY1 - 0.6,
     }, 1.4, 1.0, new Rng(505));
-    for (let i = first; i < sim.n; i++) indoorIdx.push(i);
-    const outdoorIdx: number[] = [];
-    first = sim.n;
     seedLattice(sim, {
       xMin: outdoorX0 + 0.5, yMin: outdoorY0 + 0.6,
       xMax: outdoorX1 - 1.0, yMax: outdoorY1 - 0.6,
     }, 1.4, 1.0, new Rng(606));
-    for (let i = first; i < sim.n; i++) outdoorIdx.push(i);
-    const condTherm = new ThermostatGroup(indoorIdx, cToT(state.hotResC), state.condFan);
-    const evapTherm = new ThermostatGroup(outdoorIdx, cToT(state.coldResC), state.evapFan);
+    const condTherm = new RegionThermostat(
+      { xMin: indoorX0, yMin: indoorY0, xMax: indoorX1, yMax: indoorY1 },
+      cToT(state.hotResC), state.condFan,
+    );
+    const evapTherm = new RegionThermostat(
+      { xMin: outdoorX0, yMin: outdoorY0, xMax: outdoorX1, yMax: outdoorY1 },
+      cToT(state.coldResC), state.evapFan,
+    );
     sim.thermostats.push(condTherm);
     sim.thermostats.push(evapTherm);
 
@@ -1236,13 +1251,115 @@ function fullHeatPump(): Scenario["build"] {
     sim.setSegments(segs);
     sim.primeForces();
 
+    // === HVAC service helpers =============================================
+    // The refrigerant loop atoms live inside the union of the four sub-
+    // chambers and the interconnecting pipes. Reservoir atoms (indoor,
+    // outdoor) live OUTSIDE this union, so we can safely find/remove
+    // "system" atoms by requiring position ∈ loopBoxes[i].
+    const loopBoxes: [number, number, number, number][] = [
+      [compX0, compY0, compX1, compY1],
+      [condX0, condY0, condX1, condY1],
+      [valveX0, valveY0, valveX1, valveY1],
+      [evapX0, evapY0, evapX1, evapY1],
+      // Pipes (thin corridors between the chambers)
+      [compX1, dischargeY - dischargeHW, condX0, dischargeY + dischargeHW],  // discharge
+      [liquidX - liquidHW, condY0, liquidX + liquidHW, valveY1 + 0.001],     // liquid (small y-fudge)
+      [evapX1, expansionY - expansionHW, valveX0, expansionY + expansionHW], // expansion
+      [suctionX - suctionHW, evapY1, suctionX + suctionHW, compY0 + 0.001],  // suction
+    ];
+    const countRefrigerantAtoms = (): number => {
+      let n = 0;
+      for (const [x0, y0, x1, y1] of loopBoxes) {
+        n += sim.countFreeAtomsInBox(x0, y0, x1, y1);
+      }
+      return n;
+    };
+    // Leak location: the discharge line, midpoint. Highest-P side → real
+    // refrigerant leaks bleed fastest here.
+    const leakX0 = (compX1 + condX0) / 2 - 2;
+    const leakX1 = (compX1 + condX0) / 2 + 2;
+    const leakY0 = dischargeY - dischargeHW;
+    const leakY1 = dischargeY + dischargeHW;
+    // Try to remove one refrigerant atom picked from anywhere in the loop.
+    // Returns true if it removed one.
+    const removeOneRefrigerant = (
+      preferBox?: [number, number, number, number]
+    ): boolean => {
+      if (preferBox) {
+        const idx = sim.findFreeAtomInBox(...preferBox);
+        if (idx >= 0) { sim.removeAtomAt(idx); return true; }
+      }
+      for (const box of loopBoxes) {
+        const idx = sim.findFreeAtomInBox(...box);
+        if (idx >= 0) { sim.removeAtomAt(idx); return true; }
+      }
+      return false;
+    };
+    // Charging port: adds refrigerant atoms at the suction line (real
+    // technicians charge into the suction service port on the low side).
+    // Places atoms one by one, retrying random positions until a collision-
+    // free slot is found.
+    // Charging port distributes atoms across the WHOLE low-P side (evap +
+    // suction pipe). A real service charge enters through one small port,
+    // but the low side is one connected low-pressure volume — the refrigerant
+    // spreads there fast. Making the injection region wider gives us
+    // somewhere to actually put atoms even when the evap starts near full.
+    const chargeRng = new Rng(31415);
+    const tryChargeOne = (): boolean => {
+      const rCutSq = 1.15 * 1.15;
+      for (let attempt = 0; attempt < 60; attempt++) {
+        // 80% of tries: anywhere in the evap. 20%: in the suction pipe.
+        // Evap is much bigger, gives placement room; suction is the actual
+        // port so we still land some atoms visibly there.
+        const useSuction = chargeRng.next() < 0.2;
+        const x = useSuction
+          ? suctionX - suctionHW + 0.5 + chargeRng.next() * (2 * suctionHW - 1)
+          : evapX0 + 1.5 + chargeRng.next() * (evapX1 - evapX0 - 3);
+        const y = useSuction
+          ? evapY1 + 1 + chargeRng.next() * (compY0 - evapY1 - 2)
+          : evapY0 + 1 + chargeRng.next() * (evapY1 - evapY0 - 2);
+        let ok = true;
+        for (let i = 0; i < sim.n; i++) {
+          const dx = sim.posX[i]! - x;
+          const dy = sim.posY[i]! - y;
+          if (dx * dx + dy * dy < rCutSq) { ok = false; break; }
+        }
+        if (ok) {
+          // Cold slow atoms — join the low-P side's thermal bath.
+          const sig = 0.3;
+          sim.addAtom(x, y, sig * chargeRng.gauss(), sig * chargeRng.gauss());
+          return true;
+        }
+      }
+      return false;
+    };
+    const chargeN = (n: number): number => {
+      let placed = 0;
+      for (let i = 0; i < n; i++) if (tryChargeOne()) placed++;
+      return placed;
+    };
+    // Region pressure via ideal gas: P = n * T / V. Not virial-perfect but
+    // reads the same way — dense hot region ⇒ high P, sparse cold ⇒ low P.
+    const regionPressure = (
+      x0: number, y0: number, x1: number, y1: number
+    ): number => {
+      const n = sim.countFreeAtomsInBox(x0, y0, x1, y1);
+      if (n === 0) return 0;
+      const t = meanTInBox(sim, x0, y0, x1, y1);
+      const V = (x1 - x0) * (y1 - y0);
+      return (n * Math.max(0, t)) / V;
+    };
+    // Nominal charge = atom count at scenario boot. HVAC actions read
+    // against this as a "100% baseline" so labels can say "under" / "over".
+    const NOMINAL_CHARGE = countRefrigerantAtoms();
+
     // === Tick control =====================================================
     let started = false;
     const tick = (step: number) => {
       if (step < 200 && step % 25 === 0 && step > 0) {
-        rescaleToTemperature(sim, 1.0, refIdx);
-        rescaleToTemperature(sim, 1.0, indoorIdx);
-        rescaleToTemperature(sim, 1.0, outdoorIdx);
+        // Rescale WHOLE sim during startup — Langevin brings each region
+        // to its own target within a couple hundred steps anyway.
+        rescaleToTemperature(sim, 1.0);
       }
       if (!started && step >= 200) {
         started = true;
@@ -1259,6 +1376,23 @@ function fullHeatPump(): Scenario["build"] {
         evapTherm.energyIn = 0; evapTherm.energyOut = 0;
       }
       if (started) {
+        // === HVAC service actions ==========================================
+        // Vacuum pump: pulls refrigerant out of the loop at a steady rate.
+        // Real two-stage rotary vane pumps drop the low side to <500
+        // microns in a few minutes. Here, 4 atoms/step at 60 fps × 8×
+        // dilation = ~2000 atoms/sec — enough to visibly evacuate the sim.
+        if (state.vacuumOn) {
+          for (let k = 0; k < 4; k++) {
+            if (!removeOneRefrigerant()) break;
+          }
+        }
+        // Leak: continuous slow refrigerant loss from a fixed point on
+        // the discharge line. Slow rate so the user can see the effect
+        // develop gradually rather than blip.
+        if (state.leakOn && step % 20 === 0) {
+          removeOneRefrigerant([leakX0, leakY0, leakX1, leakY1]);
+        }
+
         // One-way pumping cycle. clearContactZone() prevents an r⁻¹³ spike
         // the moment we reactivate ANY segment atop atoms that have drifted
         // into its contact zone.
@@ -1371,11 +1505,11 @@ function fullHeatPump(): Scenario["build"] {
         },
         {
           label: "indoor air T",
-          v: T(() => sim.temperatureOf(indoorIdx)),
+          v: T(() => meanTInBox(sim, indoorX0, indoorY0, indoorX1, indoorY1)),
         },
         {
           label: "outdoor air T",
-          v: T(() => sim.temperatureOf(outdoorIdx)),
+          v: T(() => meanTInBox(sim, outdoorX0, outdoorY0, outdoorX1, outdoorY1)),
         },
         {
           label: "electricity used",
@@ -1401,14 +1535,44 @@ function fullHeatPump(): Scenario["build"] {
             return (q / piston.workAbsolute).toFixed(2);
           }),
         },
+        // === HVAC service gauges ==========================================
+        {
+          label: "low-side P (suction)",
+          v: R(() => regionPressure(evapX0, evapY0, evapX1, evapY1).toFixed(2)),
+        },
+        {
+          label: "high-side P (discharge)",
+          v: R(() => regionPressure(condX0, condY0, condX1, condY1).toFixed(2)),
+        },
+        {
+          label: "refrigerant charge",
+          v: R(() => {
+            const n = countRefrigerantAtoms();
+            const pct = Math.round((100 * n) / NOMINAL_CHARGE);
+            return `${n} g (${pct}%)`;
+          }),
+        },
+        {
+          label: "system status",
+          v: R(() => {
+            const n = countRefrigerantAtoms();
+            const pct = (100 * n) / NOMINAL_CHARGE;
+            if (state.vacuumOn) return `vacuum pump ON (${n} g)`;
+            if (n < 20) return "EMPTY — needs charge";
+            if (pct < 60) return "UNDERCHARGED — low-P low, poor cooling";
+            if (pct > 140) return "OVERCHARGED — high-P high, compressor stressed";
+            if (state.leakOn) return "LEAK active — charge dropping";
+            return "normal";
+          }),
+        },
       ],
       series: [
         // Show the T split around the cycle: hot side (condenser) vs cold
         // side (evaporator), with the two air reservoirs for reference.
         { name: "cond (hot)", colour: "#e07a5f", value: () => meanTInBox(sim, condX0, condY0, condX1, condY1) },
         { name: "evap (cold)", colour: "#5f8fb8", value: () => meanTInBox(sim, evapX0, evapY0, evapX1, evapY1) },
-        { name: "indoor air", colour: "rgba(224,122,95,0.5)", value: () => sim.temperatureOf(indoorIdx) },
-        { name: "outdoor air", colour: "rgba(95,143,184,0.5)", value: () => sim.temperatureOf(outdoorIdx) },
+        { name: "indoor air", colour: "rgba(224,122,95,0.5)", value: () => meanTInBox(sim, indoorX0, indoorY0, indoorX1, indoorY1) },
+        { name: "outdoor air", colour: "rgba(95,143,184,0.5)", value: () => meanTInBox(sim, outdoorX0, outdoorY0, outdoorX1, outdoorY1) },
       ],
       sliders: [
         {
@@ -1459,6 +1623,42 @@ function fullHeatPump(): Scenario["build"] {
           onChange: (v) => { state.boilC = v; evapBoilSink.targetT = cToT(v); },
         },
       ],
+      // === HVAC service buttons ==========================================
+      // These are the tools an HVAC tech uses on a real install: a scale +
+      // charging tank, a vacuum pump, and (in reality) leak-detection dye.
+      // Play with them and watch the gauges & COP: undercharge tanks the
+      // low side; overcharge floods the high side; vacuum pulls both to 0;
+      // a slow leak walks capacity down over a minute or two.
+      actions: [
+        {
+          id: "charge_50",
+          label: "+50g charge",
+          onClick: () => { chargeN(50); },
+        },
+        {
+          id: "charge_200",
+          label: "+200g charge",
+          onClick: () => { chargeN(200); },
+        },
+        {
+          id: "leak_toggle",
+          label: "leak: toggle",
+          onClick: () => { state.leakOn = !state.leakOn; },
+        },
+        {
+          id: "vacuum_toggle",
+          label: "vacuum: toggle",
+          onClick: () => { state.vacuumOn = !state.vacuumOn; },
+        },
+        {
+          id: "recover",
+          label: "recover (empty)",
+          onClick: () => {
+            // Yank everything out at once — instant recovery.
+            while (removeOneRefrigerant()) { /* keep going */ }
+          },
+        },
+      ],
       parts: [
         // Sub-chamber labels — pipes are physically visible as walls now, so
         // just tag each part with a name. No arrows overlay needed.
@@ -1507,6 +1707,50 @@ function fullHeatPump(): Scenario["build"] {
           x: (PISTON_LEFT + PISTON_RIGHT) / 2,
           y: compY1 + 0.4,
           label: "piston",
+        },
+        // === HVAC service gauges ===========================================
+        // Low-side (blue) gauge sits over the suction line; high-side (red)
+        // over the discharge line. Range is chosen so nominal operation
+        // parks the needle near mid-scale; undercharge drops both needles,
+        // overcharge pushes the high side red-line.
+        {
+          kind: "gauge",
+          x: suctionX - suctionHW - 4, y: (evapY1 + compY0) / 2 - 5,
+          radius: 3.5,
+          value: () => regionPressure(evapX0, evapY0, evapX1, evapY1),
+          min: 0, max: 3,
+          colour: "blue",
+          label: "LOW",
+        },
+        {
+          kind: "gauge",
+          x: (compX1 + condX0) / 2, y: dischargeY - dischargeHW - 5,
+          radius: 3.5,
+          value: () => regionPressure(condX0, condY0, condX1, condY1),
+          min: 0, max: 6,
+          colour: "red",
+          label: "HIGH",
+        },
+        // === HVAC service indicators =======================================
+        // Little status lights that show when a service action is active.
+        // Vacuum & leak locations are annotated on the diagram itself so
+        // the user can see WHERE the operation is happening (not just
+        // that it's on).
+        {
+          kind: "indicator",
+          x: (compX1 + condX0) / 2 - 2, y: dischargeY + dischargeHW + 4,
+          active: () => state.leakOn,
+          label: "LEAK",
+          colourOn: "#f0a070",
+          colourOff: "rgba(120,130,140,0.4)",
+        },
+        {
+          kind: "indicator",
+          x: suctionX + 2, y: (evapY1 + compY0) / 2 + 4,
+          active: () => state.vacuumOn,
+          label: "VAC PUMP",
+          colourOn: "#e07a5f",
+          colourOff: "rgba(120,130,140,0.4)",
         },
       ],
     };
@@ -1892,7 +2136,7 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "full_heat_pump",
     name: "full heat pump — real connected loop",
-    blurb: "All four heat-pump stages connected by real narrow pipes atoms actually flow through. The compressor piston drives gas out through the discharge line, around through the condenser (hot side — dumps heat to the indoor air), down the liquid line, through the venturi throat (throttle — pressure and T drop), into the evaporator (cold side — pulls heat from the outdoor air), and back via the suction line. Because monatomic LJ marbles have no phase change, expansion through the throat wouldn't actually cool the gas, so a cold Langevin sink in the evaporator stands in for the vaporisation latent heat that real refrigerants use to reach below-outdoor temperatures (boiling T slider). The hot side is left to the real coil — compressor gas is already hot enough on its own.",
+    blurb: "A full working heat pump you can service like an HVAC technician. Blue LOW gauge on the suction line, red HIGH gauge on the discharge. Charge refrigerant into the low side (like adding from a bottle on a scale). Toggle a leak on the discharge (worst case in real life) and watch the pressures collapse. Pull the whole system down with the vacuum pump. Get it undercharged or overcharged and see what happens to the gauges, the T split, and the coils. Because monatomic LJ marbles have no phase change, a cold Langevin sink in the evaporator stands in for the vaporisation latent heat that real refrigerants use to reach below-outdoor temperatures (boiling T slider); the hot side is handled by the real coil.",
     build: fullHeatPump(),
   },
   {
