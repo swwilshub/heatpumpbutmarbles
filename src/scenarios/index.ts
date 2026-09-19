@@ -1783,6 +1783,283 @@ function fullHeatPump(): Scenario["build"] {
 // behaviour emerges: refrigerant piles up at high density near the condenser
 // (attractive LJ well causes visible condensation), thins out on the
 // evaporator side. Tuning ANY slider cascades through the whole system.
+// Hydronic house heating: a single room with a water-filled radiator on the
+// floor and a leaky ceiling to the outdoors. Same room, same radiator, but
+// a mode toggle switches the water supply between a BOILER (70°C) and a
+// HEAT PUMP (45°C). The whole point of the scenario is to make the
+// consequence tactile: at heat-pump temperatures a boiler-sized radiator
+// can't deliver enough heat to keep the room at setpoint. To compensate
+// you have to bump either the flow rate (water Langevin γ — proxy for
+// how fast fresh hot water arrives at the radiator) or the radiator
+// surface (a supplemental Langevin on the air just above the radiator,
+// standing in for adding more radiator panels or upgrading to fan-coils).
+function hydronicHouse(): Scenario["build"] {
+  return () => {
+    const anchors: UnitAnchors = { ...DEFAULT_ANCHORS };
+    const cToT = (c: number) => {
+      const m = (anchors.t2_star - anchors.t1_star) / (anchors.t2_celsius - anchors.t1_celsius);
+      return anchors.t1_star + m * (c - anchors.t1_celsius);
+    };
+
+    // Real-world flow temperatures for the two heat sources.
+    // Boilers run 60-80°C (often "high" 70-80°C on old systems). Air-source
+    // heat pumps top out around 45-55°C at reasonable COP — pushing them
+    // higher tanks efficiency.
+    const BOILER_C = 70;
+    const HEAT_PUMP_C = 45;
+    const ROOM_TARGET_C = 21;
+
+    const state = {
+      mode: "boiler" as "boiler" | "heat_pump",
+      supplyC: BOILER_C,
+      // Water-side Langevin γ: how hard we pin the radiator water to supply T.
+      // High γ = fast circulator pump (water stays hot as heat flows out).
+      // Low γ = slow pump (water cools). 1.0 lets it cool a little.
+      flowRate: 1.0,
+      // Radiator "surface area" — supplemental Langevin on the room air
+      // strip just above the radiator, target = current water T. Starting
+      // at 0 makes the coil the only heat path, which is what a boiler
+      // with a normal-sized radiator gives you. Sliding this up mimics
+      // installing more radiator panels (or a fan-coil).
+      radSize: 0.0,
+      // House envelope: outdoor T is the sink temperature, envelope
+      // leakiness γ is how fast the outdoor strip stays pinned at
+      // outdoor T (⇒ more heat can drain through the ceiling coil).
+      // 3.0 gives a decently lossy envelope so BOILER mode settles near
+      // setpoint instead of running away hot.
+      outdoorC: -5,
+      envelopeLeakiness: 3.0,
+    };
+
+    // Geometry (compact, ~40 × 25):
+    //   Room: y from roomY0 (=6) up to roomY1 (=25)
+    //   Radiator: sits below the room from y=1 to y=5, connected to the
+    //     room only via its top coil (water can't cross into the room).
+    //   Envelope loss: a Langevin cooling strip along the top of the room
+    //     air (y = roomY1-2 .. roomY1), γ = envelopeLeakiness, target =
+    //     outdoorC. Stands in for wall+roof losses; simpler and better
+    //     controlled than modelling outdoor atoms with a leaky coil.
+    const HOUSE_W = 40;
+    const HOUSE_H = 25;
+    const roomY0 = 6;
+    const roomY1 = HOUSE_H;
+    const radX0 = 6, radX1 = 34;
+    const radY0 = 1, radY1 = 5;
+    // Air strip right above the radiator (radiator "surface area" boost)
+    const boostY0 = radY1 + 0.5;
+    const boostY1 = radY1 + 3.5;
+    // Ceiling loss strip (envelope)
+    const lossY0 = roomY1 - 2.5;
+    const lossY1 = roomY1 - 0.5;
+
+    const sim = new Simulation({
+      domain: { xMin: -2, yMin: -2, xMax: HOUSE_W + 2, yMax: HOUSE_H + 3 },
+      potential: { kind: "lj", epsilon: 1, sigma: 1, rCut: 2.5 },
+      segments: [],
+      dt: 0.004,
+      capacity: 1200,
+    });
+    sim.setRng(new Rng(77));
+
+    const segs: LineSegment[] = [];
+    const wall = (ax: number, ay: number, bx: number, by: number) =>
+      segs.push({ ax, ay, bx, by, epsilon: 1, sigma: 1 });
+
+    // Room walls. Floor is split around the radiator; ceiling is solid.
+    wall(0, roomY0, radX0, roomY0);           // floor left of radiator
+    wall(radX1, roomY0, HOUSE_W, roomY0);     // floor right of radiator
+    wall(0, roomY0, 0, roomY1);               // left wall
+    wall(HOUSE_W, roomY0, HOUSE_W, roomY1);   // right wall
+    wall(0, roomY1, HOUSE_W, roomY1);         // ceiling (solid)
+
+    // Radiator box walls: bottom + sides (top is the coil).
+    wall(radX0, radY0, radX1, radY0);
+    wall(radX0, radY0, radX0, radY1);
+    wall(radX1, radY0, radX1, radY1);
+    // Sides of the radiator BELOW the room floor
+    wall(0, roomY0, 0, radY0);
+    wall(HOUSE_W, roomY0, HOUSE_W, radY0);
+    wall(0, radY0, radX0, radY0);
+    wall(radX1, radY0, HOUSE_W, radY0);
+
+    // Radiator top coil — heat-transfer surface between water and room air.
+    const radCoil = addHeatExchanger(sim, {
+      ax: radX0, ay: radY1, bx: radX1, by: radY1,
+      spacing: 1.15, layers: 2, layerOffset: 1.0,
+      tetherK: 40, sigma: 1, epsilon: 1,
+    });
+    segs.push(radCoil.barrier);
+
+    // Seed water in the radiator (dense — this is liquid water, not vapour).
+    seedLattice(sim, {
+      xMin: radX0 + 0.8, yMin: radY0 + 0.7,
+      xMax: radX1 - 0.8, yMax: radY1 - 0.7,
+    }, 1.15, 1.0, new Rng(1001));
+
+    // Seed room air (less dense).
+    seedLattice(sim, {
+      xMin: 1, yMin: roomY0 + 1,
+      xMax: HOUSE_W - 1, yMax: roomY1 - 1,
+    }, 1.5, 1.0, new Rng(2002));
+
+    // Thermostats — all position-based so nothing breaks if atoms drift.
+    // 1. Water thermostat: holds radiator water at supply T. γ = flow rate.
+    const waterTherm = new RegionThermostat(
+      { xMin: radX0, yMin: radY0, xMax: radX1, yMax: radY1 },
+      cToT(state.supplyC), state.flowRate,
+    );
+    sim.thermostats.push(waterTherm);
+    // 2. Radiator "surface area" boost: a Langevin on the air strip
+    //    immediately above the radiator, target = current water T,
+    //    γ = state.radSize. Its targetT is refreshed each tick to track
+    //    the water T. Increasing γ mimics adding more radiator surface.
+    const radBoost = new RegionThermostat(
+      { xMin: radX0, yMin: boostY0, xMax: radX1, yMax: boostY1 },
+      cToT(state.supplyC), state.radSize,
+    );
+    sim.thermostats.push(radBoost);
+    // 3. Envelope loss: a Langevin on a strip along the ceiling, pulling
+    //    room air toward outdoor T. γ = envelopeLeakiness. The bigger it
+    //    is, the more heat leaks to the outdoors and the harder the
+    //    radiator has to work to hold room T at setpoint.
+    const envelopeTherm = new RegionThermostat(
+      { xMin: 1, yMin: lossY0, xMax: HOUSE_W - 1, yMax: lossY1 },
+      cToT(state.outdoorC), state.envelopeLeakiness,
+    );
+    sim.thermostats.push(envelopeTherm);
+
+    sim.setSegments(segs);
+    sim.primeForces();
+
+    const setMode = (m: "boiler" | "heat_pump") => {
+      state.mode = m;
+      state.supplyC = m === "boiler" ? BOILER_C : HEAT_PUMP_C;
+      waterTherm.targetT = cToT(state.supplyC);
+    };
+
+    const tick = (step: number) => {
+      if (step < 200 && step % 25 === 0 && step > 0) {
+        rescaleToTemperature(sim, 1.0);
+      }
+      // Track the water T with the radiator-boost Langevin: the boost
+      // pulls room air toward whatever the water currently sits at, so
+      // as flow rate changes and water T sags, the boost sags with it.
+      const tw = meanTInBox(sim, radX0, radY0, radX1, radY1);
+      if (tw > 0) radBoost.targetT = tw;
+    };
+
+    return {
+      sim,
+      tick,
+      unitAnchors: anchors,
+      cMin: -20,
+      cMax: 90,
+      regions: [
+        // Room tint — tracks air temperature, so the whole room glows
+        // colder in HEAT PUMP mode until the user compensates.
+        {
+          label: "",
+          xMin: 0, yMin: roomY0, xMax: HOUSE_W, yMax: roomY1,
+          tintByT: () => meanTInBox(sim, 1, roomY0 + 1, HOUSE_W - 1, roomY1 - 1),
+          tintByTAlpha: 0.28,
+        },
+        // Radiator tint — its water T reads the supply setpoint minus
+        // whatever's being drawn out by the room.
+        {
+          label: "",
+          xMin: radX0, yMin: radY0, xMax: radX1, yMax: radY1,
+          tintByT: () => meanTInBox(sim, radX0, radY0, radX1, radY1),
+          tintByTAlpha: 0.4,
+        },
+      ],
+      readouts: [
+        { label: "mode", v: R(() => state.mode === "boiler" ? "BOILER (hot flow)" : "HEAT PUMP (warm flow)") },
+        { label: "supply T (setpoint)", v: T(() => cToT(state.supplyC)) },
+        { label: "actual water T", v: T(() => meanTInBox(sim, radX0, radY0, radX1, radY1)) },
+        { label: "radiator surface T", v: T(() => sim.temperatureOf(radCoil.atomIndices)) },
+        { label: "room air T", v: T(() => meanTInBox(sim, 1, roomY0 + 1, HOUSE_W - 1, roomY1 - 1)) },
+        { label: "target room T", v: T(() => cToT(ROOM_TARGET_C)) },
+        { label: "outdoor T", v: T(() => cToT(state.outdoorC)) },
+        {
+          label: "room vs target",
+          v: R(() => {
+            const room = meanTInBox(sim, 1, roomY0 + 1, HOUSE_W - 1, roomY1 - 1);
+            const roomC = (room - anchors.t1_star) / (anchors.t2_star - anchors.t1_star)
+              * (anchors.t2_celsius - anchors.t1_celsius) + anchors.t1_celsius;
+            const delta = roomC - ROOM_TARGET_C;
+            if (Math.abs(delta) < 1) return "at setpoint ✓";
+            if (delta > 0) return `+${delta.toFixed(1)}°C above target (too warm)`;
+            return `${delta.toFixed(1)}°C below target (too cold — bigger radiator or more flow)`;
+          }),
+        },
+      ],
+      series: [
+        { name: "supply T", colour: "rgba(240,160,112,0.5)", value: () => cToT(state.supplyC) },
+        { name: "water", colour: "#e07a5f", value: () => meanTInBox(sim, radX0, radY0, radX1, radY1) },
+        { name: "room air", colour: "#f0c060", value: () => meanTInBox(sim, 1, roomY0 + 1, HOUSE_W - 1, roomY1 - 1) },
+        { name: "target", colour: "rgba(200,215,230,0.35)", value: () => cToT(ROOM_TARGET_C) },
+        { name: "outdoor", colour: "#5f8fb8", value: () => cToT(state.outdoorC) },
+      ],
+      sliders: [
+        {
+          id: "supplyC",
+          label: "supply water T (°C)",
+          min: 30, max: 90, step: 1, initial: state.supplyC,
+          format: (v) => `${v.toFixed(0)} °C`,
+          onChange: (v) => { state.supplyC = v; waterTherm.targetT = cToT(v); },
+        },
+        {
+          id: "flowRate",
+          label: "flow rate (γ)",
+          min: 0.2, max: 10.0, step: 0.1, initial: state.flowRate,
+          format: (v) => v.toFixed(1),
+          onChange: (v) => { state.flowRate = v; waterTherm.gamma = v; },
+        },
+        {
+          id: "radSize",
+          label: "radiator surface (γ)",
+          min: 0.0, max: 4.0, step: 0.05, initial: state.radSize,
+          format: (v) => v.toFixed(2),
+          onChange: (v) => { state.radSize = v; radBoost.gamma = v; },
+        },
+        {
+          id: "outdoorC",
+          label: "outdoor T (°C)",
+          min: -20, max: 20, step: 1, initial: state.outdoorC,
+          format: (v) => `${v.toFixed(0)} °C`,
+          onChange: (v) => { state.outdoorC = v; envelopeTherm.targetT = cToT(v); },
+        },
+        {
+          id: "envelopeLeakiness",
+          label: "envelope leakiness (γ)",
+          min: 0.1, max: 5.0, step: 0.1, initial: state.envelopeLeakiness,
+          format: (v) => v.toFixed(1),
+          onChange: (v) => { state.envelopeLeakiness = v; envelopeTherm.gamma = v; },
+        },
+      ],
+      actions: [
+        {
+          id: "boiler_mode",
+          label: "BOILER mode (70°C flow)",
+          onClick: () => setMode("boiler"),
+        },
+        {
+          id: "heat_pump_mode",
+          label: "HEAT PUMP mode (45°C flow)",
+          onClick: () => setMode("heat_pump"),
+        },
+      ],
+      parts: [
+        { kind: "label", x: HOUSE_W / 2, y: roomY1 - 1, label: "house room" },
+        { kind: "label", x: HOUSE_W / 2, y: (radY0 + radY1) / 2, label: "radiator (water inside)" },
+        { kind: "label", x: (radX0 + radX1) / 2, y: radY1 - 0.5, label: "radiator surface" },
+      ],
+      explainer: `A gas/oil BOILER flows water at 60-80°C. A room at ~20°C means a ~50°C ΔT across the radiator surface — that's what makes a small panel radiator dump enough heat to keep the room warm.<br><br>A HEAT PUMP outputs 35-55°C water (higher and its COP tanks). Half the ΔT means roughly HALF the heat per m² of radiator surface. Same panel, same flow rate → room stalls well short of setpoint.<br><br>To match a boiler with a heat pump you need to compensate: <b>bigger radiators</b> (crank the "radiator surface" γ), <b>faster flow</b> (crank "flow rate" γ), or both. Try it: press BOILER mode, watch the room hit ~21°C. Press HEAT PUMP mode, watch it drift down. Then bring it back with the surface + flow sliders.`,
+    };
+  };
+}
+
+
 function closedLoop(): Scenario["build"] {
   return () => {
     const anchors: UnitAnchors = { ...DEFAULT_ANCHORS };
@@ -2138,6 +2415,12 @@ export const SCENARIOS: Scenario[] = [
     name: "full heat pump — real connected loop",
     blurb: "A full working heat pump you can service like an HVAC technician. Blue LOW gauge on the suction line, red HIGH gauge on the discharge. Charge refrigerant into the low side (like adding from a bottle on a scale). Toggle a leak on the discharge (worst case in real life) and watch the pressures collapse. Pull the whole system down with the vacuum pump. Get it undercharged or overcharged and see what happens to the gauges, the T split, and the coils. Because monatomic LJ marbles have no phase change, a cold Langevin sink in the evaporator stands in for the vaporisation latent heat that real refrigerants use to reach below-outdoor temperatures (boiling T slider); the hot side is handled by the real coil.",
     build: fullHeatPump(),
+  },
+  {
+    id: "hydronic_house",
+    name: "boiler vs heat pump — a room with a radiator",
+    blurb: "Same room, same radiator, same outdoor temperature — but a mode toggle swaps the water supply between a BOILER (70°C flow) and a HEAT PUMP (45°C flow). In BOILER mode the room hits setpoint fine. Press HEAT PUMP and watch the room drift down: the smaller ΔT across the radiator surface can't deliver the same heat. Then compensate with the surface area and flow-rate sliders — the same trade real hydronic retrofits face when moving off gas.",
+    build: hydronicHouse(),
   },
   {
     id: "closed_loop",
