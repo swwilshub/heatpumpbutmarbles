@@ -66,70 +66,6 @@ export class ThermostatGroup {
   }
 }
 
-// Region-based Langevin thermostat. Same OU update + energy accounting as
-// ThermostatGroup, but acts on every free atom currently INSIDE a box each
-// step, instead of a fixed index list. Atoms flowing in/out of the box are
-// picked up / dropped automatically.
-//
-// Why we need this in the heat-pump: real refrigerants cool across the
-// throttle because a fraction flash-vaporises and the vaporisation latent
-// heat is drawn from the liquid that stays behind (Joule-Thomson via phase
-// change). Monatomic LJ has no phase change — expansion through a static
-// constriction doesn't cool the gas, so the cycle can't produce the cold
-// side that a heat pump needs to absorb heat from the outdoor coil. A cold
-// region thermostat placed over the evaporator chamber stands in for the
-// missing latent-heat sink: it holds the refrigerant at the "boiling" T
-// while the coil pours heat in from the outdoors, exactly like a real
-// evaporator holds T constant while liquid boils to gas. The energy the
-// thermostat absorbs = the latent heat that vaporisation would absorb.
-// Symmetrically a warm region thermostat in the condenser represents the
-// condensation releasing latent heat to the indoor coil.
-export class RegionThermostat {
-  targetT: number;
-  gamma: number;
-  xMin: number; yMin: number; xMax: number; yMax: number;
-  energyIn = 0;
-  energyOut = 0;
-  constructor(
-    box: { xMin: number; yMin: number; xMax: number; yMax: number },
-    targetT: number,
-    gamma: number
-  ) {
-    this.xMin = box.xMin; this.yMin = box.yMin;
-    this.xMax = box.xMax; this.yMax = box.yMax;
-    this.targetT = targetT;
-    this.gamma = gamma;
-  }
-  apply(sim: Simulation, dt: number, rng: Rng): void {
-    if (this.gamma <= 0) return;
-    const c1 = Math.exp(-this.gamma * dt);
-    const c2 = Math.sqrt(this.targetT * (1 - c1 * c1));
-    const posX = sim.posX;
-    const posY = sim.posY;
-    const velX = sim.velX;
-    const velY = sim.velY;
-    const kind = sim.kind;
-    const n = sim.n;
-    for (let i = 0; i < n; i++) {
-      if (kind[i] !== 0) continue;
-      const x = posX[i]!;
-      const y = posY[i]!;
-      if (x < this.xMin || x > this.xMax || y < this.yMin || y > this.yMax) continue;
-      const vx0 = velX[i]!;
-      const vy0 = velY[i]!;
-      const ke0 = 0.5 * (vx0 * vx0 + vy0 * vy0);
-      const vx = c1 * vx0 + c2 * rng.gauss();
-      const vy = c1 * vy0 + c2 * rng.gauss();
-      velX[i] = vx;
-      velY[i] = vy;
-      const ke1 = 0.5 * (vx * vx + vy * vy);
-      const dke = ke1 - ke0;
-      if (dke >= 0) this.energyIn += dke;
-      else this.energyOut += -dke;
-    }
-  }
-}
-
 // Velocity-rescale thermostat — simplest energy-conserving-per-step method
 // for equilibration. Do NOT use during a measurement window where you want
 // natural energy exchange.
@@ -205,7 +141,7 @@ export class Simulation {
   n = 0;
   step = 0;
   time = 0;
-  thermostats: (ThermostatGroup | RegionThermostat)[] = [];
+  thermostats: ThermostatGroup[] = [];
   movingSegments: MovingSegment[] = [];
   private workScratch = { vx: 0, vy: 0 };
   private rng: Rng | null = null;
@@ -278,66 +214,6 @@ export class Simulation {
   popAtom(): void {
     if (this.n <= 0) return;
     this.n--;
-  }
-
-  // Remove the atom at `idx` by swapping the last-atom's fields into that
-  // slot and decrementing n. Safe when the sim uses only position-based
-  // thermostats (RegionThermostat) — an old-style ThermostatGroup whose
-  // indices reference either idx or n-1 will become invalid, so callers
-  // must not use this method when index-based groups are live.
-  removeAtomAt(idx: number): void {
-    if (idx < 0 || idx >= this.n) return;
-    const last = this.n - 1;
-    if (idx !== last) {
-      this.posX[idx] = this.posX[last]!;
-      this.posY[idx] = this.posY[last]!;
-      this.velX[idx] = this.velX[last]!;
-      this.velY[idx] = this.velY[last]!;
-      this.accX[idx] = this.accX[last]!;
-      this.accY[idx] = this.accY[last]!;
-      this.homeX[idx] = this.homeX[last]!;
-      this.homeY[idx] = this.homeY[last]!;
-      this.tetherK[idx] = this.tetherK[last]!;
-      this.kind[idx] = this.kind[last]!;
-      this.smoothedV2[idx] = this.smoothedV2[last]!;
-    }
-    this.n--;
-  }
-
-  // Find one free (kind=0) atom whose position is inside the given box, or
-  // return -1 if none. Used by HVAC service actions (leaks, vacuum) to pick
-  // which atom to remove from a specific region.
-  findFreeAtomInBox(
-    xMin: number, yMin: number, xMax: number, yMax: number
-  ): number {
-    const posX = this.posX;
-    const posY = this.posY;
-    const kind = this.kind;
-    for (let i = 0; i < this.n; i++) {
-      if (kind[i] !== 0) continue;
-      const x = posX[i]!;
-      const y = posY[i]!;
-      if (x >= xMin && x <= xMax && y >= yMin && y <= yMax) return i;
-    }
-    return -1;
-  }
-
-  // Count free (kind=0) atoms in a box — used for per-region pressure
-  // and refrigerant-charge readouts.
-  countFreeAtomsInBox(
-    xMin: number, yMin: number, xMax: number, yMax: number
-  ): number {
-    const posX = this.posX;
-    const posY = this.posY;
-    const kind = this.kind;
-    let count = 0;
-    for (let i = 0; i < this.n; i++) {
-      if (kind[i] !== 0) continue;
-      const x = posX[i]!;
-      const y = posY[i]!;
-      if (x >= xMin && x <= xMax && y >= yMin && y <= yMax) count++;
-    }
-    return count;
   }
 
   // velocity Verlet (kick-drift-kick) + Langevin thermostat step after kick.
